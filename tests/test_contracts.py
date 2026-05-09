@@ -13,6 +13,11 @@ from plugins.bot_private_relay.plugin import BotPrivateRelayPlugin
 from plugins.bot_private_relay.policy import PolicyEngine
 from plugins.bot_private_relay.presence import PresenceManager
 from plugins.bot_private_relay.relay_actions import BotRelaySendTextAction
+from plugins.bot_private_relay.relay_tools import (
+    CancelTransactionTool,
+    ConfirmTransactionTool,
+    DeclineTransactionTool,
+)
 from plugins.bot_private_relay.session import SessionManager
 from plugins.bot_private_relay.system_handler import SystemChannelHandler
 from plugins.bot_private_relay import store
@@ -151,3 +156,84 @@ def test_command_status() -> None:
     success, text = __import__("asyncio").run(command.status())
     assert success is True
     assert "relay status:" in text
+
+
+def test_transaction_tools_are_isolated_to_bot_relay_chatter() -> None:
+    assert ConfirmTransactionTool.chatter_allow == ["bot_relay_chatter"]
+    assert DeclineTransactionTool.chatter_allow == ["bot_relay_chatter"]
+    assert CancelTransactionTool.chatter_allow == ["bot_relay_chatter"]
+
+
+def test_confirm_tool_runs_six_hard_checks_and_updates_session() -> None:
+    store.reset_state()
+    session = store.RelaySession(
+        conversation_id="conv-001",
+        peer_bot_id="114514",
+        channel="transaction",
+        intent="request",
+        state="pending_reply",
+        terminal=False,
+        expect_reply=True,
+        reply_budget=3,
+        allowed_responders=["114514"],
+    )
+    store.save_session(session)
+    store.save_transaction_record(
+        store.RelayTransactionRecord(
+            conversation_id="conv-001",
+            trace_id="trace-001",
+            from_bot="223123",
+            to_bot="114514",
+            current_state="pending_reply",
+            topic="整理会议纪要",
+            summary="整理会议纪要",
+        )
+    )
+    plugin = BotPrivateRelayPlugin(build_config())
+    success, payload = __import__("asyncio").run(
+        ConfirmTransactionTool(plugin).execute(
+            conversation_id="conv-001",
+            caller_bot="114514",
+            reason="我可以整理，下午给你",
+        )
+    )
+    assert success is True
+    assert payload["status"] == "ok"
+    assert store.SESSION_TABLE["conv-001"].state == "confirmed"
+    assert store.SESSION_TABLE["conv-001"].terminal is True
+    assert store.TRANSACTION_LOG["conv-001"].final_intent == "confirm"
+    assert store.RELAY_TODOS
+
+
+def test_outbound_envelope_can_infer_confirm_from_session_state() -> None:
+    store.reset_state()
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-002",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="request",
+            state="confirmed",
+            terminal=True,
+            expect_reply=False,
+            reply_budget=0,
+            allowed_responders=["114514"],
+        )
+    )
+    envelope = SessionManager().build_outbound_envelope(
+        message_envelope={
+            "message_info": {
+                "platform": "bot_relay",
+                "user_info": {"user_id": "114514", "user_nickname": "流光"},
+                "extra": {},
+            },
+            "message_segment": [{"type": "text", "data": "没问题，我来整理"}],
+        },
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+    )
+    assert envelope.intent == "confirm"
+    assert envelope.terminal is True
+    assert envelope.expect_reply is False
