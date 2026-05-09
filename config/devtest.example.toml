@@ -1,0 +1,18 @@
+[relay]
+enabled = true
+bot_id = "223123"
+bot_name = "清风"
+relay_url = "mqtt://localhost:1883"
+auth_token = ""
+
+[partners.bot_b]
+bot_id = "114514"
+bot_name = "流光"
+
+[presence]
+allowed_partner_bots = ["114514"]
+require_known_partner = true
+
+# DEV/TEST ONLY:
+# This file is only for plugin-local testing inside plugins/bot_private_relay.
+# Production deployment must switch to Neo-MoFox's standard config creation/loading flow.
