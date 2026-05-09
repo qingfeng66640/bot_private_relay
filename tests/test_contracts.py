@@ -13,6 +13,7 @@ from plugins.bot_private_relay.plugin import BotPrivateRelayPlugin
 from plugins.bot_private_relay.policy import PolicyEngine
 from plugins.bot_private_relay.presence import PresenceManager
 from plugins.bot_private_relay.relay_actions import BotRelaySendTextAction
+from plugins.bot_private_relay.router import BotPrivateRelayRouter
 from plugins.bot_private_relay.relay_tools import (
     CancelTransactionTool,
     ConfirmTransactionTool,
@@ -283,3 +284,22 @@ def test_social_session_and_memory_candidate_projection() -> None:
     assert session.expect_reply is True
     manager.maybe_create_memory_candidate(envelope=social)
     assert store.RELAY_MEMORY_CANDIDATES
+
+
+def test_phase4_command_and_router_surface() -> None:
+    plugin = BotPrivateRelayPlugin(build_config())
+    command = RelayCommand(plugin=plugin, stream_id="s1")
+    ok_status, status_text = __import__("asyncio").run(command.status())
+    ok_inspect, inspect_text = __import__("asyncio").run(command.inspect())
+    ok_partners, partners_text = __import__("asyncio").run(command.partners())
+    ok_export, export_text = __import__("asyncio").run(command.export())
+    assert ok_status is True and "memory_candidates=" in status_text
+    assert ok_inspect is True and "transactions=" in inspect_text
+    assert ok_partners is True and "114514" in partners_text
+    assert ok_export is True and "relay_debug_snapshot.json" in export_text
+
+    router = BotPrivateRelayRouter(plugin=plugin)
+    health = __import__("asyncio").run(router.get_app().routes[4].endpoint())
+    stats = __import__("asyncio").run(router.get_app().routes[5].endpoint())
+    assert health["ok"] is True
+    assert "presence_count" in stats
