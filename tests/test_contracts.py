@@ -237,3 +237,49 @@ def test_outbound_envelope_can_infer_confirm_from_session_state() -> None:
     assert envelope.intent == "confirm"
     assert envelope.terminal is True
     assert envelope.expect_reply is False
+
+
+def test_expect_reply_override_priority_for_social_session() -> None:
+    manager = SessionManager()
+    social = manager.build_social_envelope(
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+        text="我们晚点再继续聊这个话题。",
+        phase="active",
+        reply_budget=2,
+        cooldown_seconds=5,
+    )
+    assert social.expect_reply is True
+    social.phase = "ending"
+    social = manager.apply_expect_reply_overrides(social)
+    assert social.expect_reply is False
+    social.phase = "active"
+    social.reply_budget = 0
+    social = manager.apply_expect_reply_overrides(social)
+    assert social.expect_reply is False
+    social.reply_budget = 2
+    social.terminal = True
+    social = manager.apply_expect_reply_overrides(social)
+    assert social.expect_reply is False
+
+
+def test_social_session_and_memory_candidate_projection() -> None:
+    store.reset_state()
+    manager = SessionManager()
+    social = manager.build_social_envelope(
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+        text="这次合作里你对会议纪要的整理方式让我记住了。",
+        phase="active",
+        reply_budget=2,
+        cooldown_seconds=10,
+    )
+    session = manager.save_social_session_from_envelope(social)
+    assert session.channel == "social"
+    assert session.expect_reply is True
+    manager.maybe_create_memory_candidate(envelope=social)
+    assert store.RELAY_MEMORY_CANDIDATES
