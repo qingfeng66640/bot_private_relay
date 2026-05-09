@@ -23,3 +23,8 @@ class RelayStateService(BaseService):
         """Return current session table."""
 
         return dict(store.SESSION_TABLE)
+
+    def memory_candidate_snapshot(self) -> dict[str, store.RelayMemoryCandidate]:
+        """Return projected memory candidates."""
+
+        return dict(store.RELAY_MEMORY_CANDIDATES)
