@@ -72,6 +72,18 @@ class RelayScheduleItem:
     status: str = "proposed"
 
 
+@dataclass(slots=True)
+class RelayMemoryCandidate:
+    """Phase 3 memory-candidate projection."""
+
+    candidate_id: str
+    conversation_id: str
+    peer_bot_id: str
+    channel: str
+    content: str
+    score: float = 0.0
+
+
 DEDUP_CACHE: dict[str, float] = {}
 PRESENCE_TABLE: dict[str, PresenceRecord] = {}
 SESSION_TABLE: dict[str, RelaySession] = {}
@@ -79,6 +91,7 @@ AUDIT_LOG: list[dict[str, object]] = []
 TRANSACTION_LOG: dict[str, RelayTransactionRecord] = {}
 RELAY_TODOS: dict[str, RelayTodoItem] = {}
 RELAY_SCHEDULES: dict[str, RelayScheduleItem] = {}
+RELAY_MEMORY_CANDIDATES: dict[str, RelayMemoryCandidate] = {}
 
 
 def reset_state() -> None:
@@ -91,6 +104,7 @@ def reset_state() -> None:
     TRANSACTION_LOG.clear()
     RELAY_TODOS.clear()
     RELAY_SCHEDULES.clear()
+    RELAY_MEMORY_CANDIDATES.clear()
 
 
 def remember_message(message_id: str, ttl_seconds: int = 3600) -> bool:
@@ -155,3 +169,9 @@ def save_schedule(item: RelayScheduleItem) -> None:
     """Persist projected schedule item."""
 
     RELAY_SCHEDULES[item.schedule_id] = item
+
+
+def save_memory_candidate(candidate: RelayMemoryCandidate) -> None:
+    """Persist projected memory candidate."""
+
+    RELAY_MEMORY_CANDIDATES[candidate.candidate_id] = candidate
