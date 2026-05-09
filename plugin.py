@@ -14,6 +14,7 @@ from .relay_actions import (
     BotRelaySendTextAction,
     BotRelayStopConversationAction,
 )
+from .router import BotPrivateRelayRouter
 from .relay_tools import (
     CancelTransactionTool,
     ConfirmTransactionTool,
@@ -51,4 +52,5 @@ class BotPrivateRelayPlugin(BasePlugin):
             LoopGuardEventHandler,
             RelayCommand,
             RelayStateService,
+            BotPrivateRelayRouter,
         ]

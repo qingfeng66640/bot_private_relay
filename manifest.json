@@ -65,6 +65,11 @@
       "component_type": "service",
       "component_name": "relay_state",
       "dependencies": []
+    },
+    {
+      "component_type": "router",
+      "component_name": "bot_private_relay",
+      "dependencies": []
     }
   ],
   "entry_point": "plugin.py",
