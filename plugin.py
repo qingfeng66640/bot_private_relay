@@ -14,6 +14,11 @@ from .relay_actions import (
     BotRelaySendTextAction,
     BotRelayStopConversationAction,
 )
+from .relay_tools import (
+    CancelTransactionTool,
+    ConfirmTransactionTool,
+    DeclineTransactionTool,
+)
 from .service import RelayStateService
 
 
@@ -40,6 +45,9 @@ class BotPrivateRelayPlugin(BasePlugin):
             BotRelaySendTextAction,
             BotRelayPassAndWaitAction,
             BotRelayStopConversationAction,
+            ConfirmTransactionTool,
+            DeclineTransactionTool,
+            CancelTransactionTool,
             LoopGuardEventHandler,
             RelayCommand,
             RelayStateService,
