@@ -37,10 +37,48 @@ class RelaySession:
     updated_at: float = field(default_factory=time.time)
 
 
+@dataclass(slots=True)
+class RelayTransactionRecord:
+    """Phase 2 transaction record."""
+
+    conversation_id: str
+    trace_id: str
+    from_bot: str
+    to_bot: str
+    current_state: str
+    final_intent: str | None = None
+    topic: str = ""
+    summary: str = ""
+
+
+@dataclass(slots=True)
+class RelayTodoItem:
+    """Phase 2 lightweight todo projection."""
+
+    todo_id: str
+    owner_bot: str
+    title: str
+    status: str = "open"
+
+
+@dataclass(slots=True)
+class RelayScheduleItem:
+    """Phase 2 lightweight schedule projection."""
+
+    schedule_id: str
+    organizer_bot: str
+    participant_bots: list[str] = field(default_factory=list)
+    title: str = ""
+    status: str = "proposed"
+
+
 DEDUP_CACHE: dict[str, float] = {}
 PRESENCE_TABLE: dict[str, PresenceRecord] = {}
 SESSION_TABLE: dict[str, RelaySession] = {}
 AUDIT_LOG: list[dict[str, object]] = []
+TRANSACTION_LOG: dict[str, RelayTransactionRecord] = {}
+RELAY_TODOS: dict[str, RelayTodoItem] = {}
+RELAY_SCHEDULES: dict[str, RelayScheduleItem] = {}
 
 
 def reset_state() -> None:
@@ -50,6 +88,9 @@ def reset_state() -> None:
     PRESENCE_TABLE.clear()
     SESSION_TABLE.clear()
     AUDIT_LOG.clear()
+    TRANSACTION_LOG.clear()
+    RELAY_TODOS.clear()
+    RELAY_SCHEDULES.clear()
 
 
 def remember_message(message_id: str, ttl_seconds: int = 3600) -> bool:
@@ -96,3 +137,21 @@ def audit(event: str, **data: object) -> None:
     """Append a lightweight audit entry."""
 
     AUDIT_LOG.append({"event": event, "time": time.time(), **data})
+
+
+def save_transaction_record(record: RelayTransactionRecord) -> None:
+    """Persist transaction log entry."""
+
+    TRANSACTION_LOG[record.conversation_id] = record
+
+
+def save_todo(todo: RelayTodoItem) -> None:
+    """Persist projected todo item."""
+
+    RELAY_TODOS[todo.todo_id] = todo
+
+
+def save_schedule(item: RelayScheduleItem) -> None:
+    """Persist projected schedule item."""
+
+    RELAY_SCHEDULES[item.schedule_id] = item
