@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+from plugins.bot_private_relay.adapter import BotRelayAdapter
 from plugins.bot_private_relay.command import RelayCommand
+from plugins.bot_private_relay.chatter import BotRelayChatter
 from plugins.bot_private_relay.config import BotPrivateRelayConfig, PartnerSection
 from plugins.bot_private_relay.envelope import RelayEnvelope
 from plugins.bot_private_relay.event_handler import LoopGuardEventHandler
+from plugins.bot_private_relay.memory_bridge import MemoryBridgeService
 from plugins.bot_private_relay.plugin import BotPrivateRelayPlugin
 from plugins.bot_private_relay.policy import PolicyEngine
 from plugins.bot_private_relay.presence import PresenceManager
@@ -22,6 +26,15 @@ from plugins.bot_private_relay.relay_tools import (
 from plugins.bot_private_relay.session import SessionManager
 from plugins.bot_private_relay.system_handler import SystemChannelHandler
 from plugins.bot_private_relay import store
+
+
+class DummySink:
+    """Minimal CoreSink stub for adapter tests."""
+
+
+def build_adapter() -> BotRelayAdapter:
+    plugin = BotPrivateRelayPlugin(build_config())
+    return BotRelayAdapter(core_sink=DummySink(), plugin=plugin)
 
 
 def build_config() -> BotPrivateRelayConfig:
@@ -41,6 +54,7 @@ def test_manifest_and_plugin_identity() -> None:
     plugin = BotPrivateRelayPlugin(build_config())
     components = plugin.get_components()
     assert components
+    assert MemoryBridgeService in components
 
 
 def test_config_partner_lookup_uses_bot_id() -> None:
@@ -124,8 +138,94 @@ def test_presence_and_system_handler_short_path() -> None:
     assert store.PRESENCE_TABLE["223123"].status == "online"
 
 
+def test_adapter_rejects_wrong_target_or_unknown_partner() -> None:
+    adapter = build_adapter()
+    wrong_target = __import__("asyncio").run(
+        adapter.from_platform_message(
+            {
+                "from_bot": "223123",
+                "from_bot_name": "清风",
+                "to_bot": "999999",
+                "to_bot_name": "别的 bot",
+                "channel": "transaction",
+                "intent": "notify",
+                "message_id": "m-wrong-target",
+                "conversation_id": "c1",
+                "trace_id": "t1",
+                "payload": {"text": "hello"},
+            }
+        )
+    )
+    assert wrong_target is None
+
+    unknown_partner = __import__("asyncio").run(
+        adapter.from_platform_message(
+            {
+                "from_bot": "777777",
+                "from_bot_name": "陌生 bot",
+                "to_bot": "223123",
+                "to_bot_name": "清风",
+                "channel": "transaction",
+                "intent": "notify",
+                "message_id": "m-unknown-partner",
+                "conversation_id": "c2",
+                "trace_id": "t2",
+                "payload": {"text": "hello"},
+            }
+        )
+    )
+    assert unknown_partner is None
+
+
+def test_adapter_accepts_allowed_partner_and_maps_context() -> None:
+    adapter = build_adapter()
+    envelope = __import__("asyncio").run(
+        adapter.from_platform_message(
+            {
+                "from_bot": "114514",
+                "from_bot_name": "流光",
+                "to_bot": "223123",
+                "to_bot_name": "清风",
+                "channel": "transaction",
+                "intent": "request",
+                "expect_reply": True,
+                "reply_budget": 3,
+                "terminal": False,
+                "message_id": "m-ok",
+                "conversation_id": "c-ok",
+                "trace_id": "t-ok",
+                "payload": {"text": "请帮我处理一下"},
+            }
+        )
+    )
+    assert envelope is not None
+    message_info = envelope["message_info"]
+    assert message_info["user_info"]["user_id"] == "114514"
+    assert message_info["extra"]["relay_context"]["expect_reply"] is True
+
+
 def test_relay_action_isolated_to_bot_relay_chatter() -> None:
     assert BotRelaySendTextAction.chatter_allow == ["bot_relay_chatter"]
+
+
+def test_bot_relay_chatter_sub_agent_skips_when_expect_reply_false() -> None:
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    unread = type(
+        "Msg",
+        (),
+        {
+            "extra": {"relay_context": {"expect_reply": False}},
+            "processed_plain_text": "",
+            "content": "",
+            "sender_id": "114514",
+            "sender_name": "流光",
+        },
+    )()
+    decision = __import__("asyncio").run(
+        chatter.sub_agent("", [unread], type("S", (), {"chat_type": "private"})())
+    )
+    assert decision["should_respond"] is False
 
 
 def test_loop_guard_received_dedup_and_sent_boundary() -> None:
@@ -149,6 +249,14 @@ def test_loop_guard_received_dedup_and_sent_boundary() -> None:
     decision3, sent_after = handler._handle_sent(sent_params)
     assert str(decision3) == "EventDecision.STOP"
     assert sent_after["continue_send"] is False
+    good_params = {
+        "message": type("M", (), {"platform": "bot_relay", "extra": {"relay_context": {"intent": "notify"}}})(),
+        "envelope": None,
+        "adapter_signature": "bot_private_relay:adapter:bot_relay",
+        "continue_send": True,
+    }
+    decision4, _ = handler._handle_sent(good_params)
+    assert str(decision4) == "EventDecision.SUCCESS"
 
 
 def test_command_status() -> None:
@@ -292,7 +400,14 @@ def test_phase4_command_and_router_surface() -> None:
     ok_status, status_text = __import__("asyncio").run(command.status())
     ok_inspect, inspect_text = __import__("asyncio").run(command.inspect())
     ok_partners, partners_text = __import__("asyncio").run(command.partners())
-    ok_export, export_text = __import__("asyncio").run(command.export())
+    cwd = os.getcwd()
+    tmp_dir = Path(__file__).resolve().parent / "tmp_runtime"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    os.chdir(tmp_dir)
+    try:
+        ok_export, export_text = __import__("asyncio").run(command.export())
+    finally:
+        os.chdir(cwd)
     assert ok_status is True and "memory_candidates=" in status_text
     assert ok_inspect is True and "transactions=" in inspect_text
     assert ok_partners is True and "114514" in partners_text
@@ -302,4 +417,4 @@ def test_phase4_command_and_router_surface() -> None:
     health = __import__("asyncio").run(router.get_app().routes[4].endpoint())
     stats = __import__("asyncio").run(router.get_app().routes[5].endpoint())
     assert health["ok"] is True
-    assert "presence_count" in stats
+    assert stats["debug_surface"] == "limited"
