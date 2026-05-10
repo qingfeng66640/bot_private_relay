@@ -134,6 +134,16 @@ class BotRelayAdapter(BaseAdapter):
         relay_envelope = RelayEnvelope.from_dict(raw_dict)
         relay_envelope.validate()
         presence_manager = PresenceManager(self.relay_config)
+        if relay_envelope.to_bot not in {self.relay_config.relay.bot_id, "*"}:
+            logger.warning(
+                f"Ignoring relay envelope for different target bot: {relay_envelope.to_bot}"
+            )
+            return None
+        if relay_envelope.channel != "system" and not presence_manager.is_allowed(relay_envelope.from_bot):
+            logger.warning(
+                f"Ignoring relay envelope from unknown partner bot: {relay_envelope.from_bot}"
+            )
+            return None
         system_handler = SystemChannelHandler(presence_manager)
         if system_handler.handle(relay_envelope):
             return None

@@ -59,7 +59,7 @@ class LoopGuardEventHandler(BaseEventHandler):
             return EventDecision.PASS, params
         if message.platform != "bot_relay":
             return EventDecision.PASS, params
-        if "bot_private_relay:adapter:bot_relay" not in adapter_signature:
+        if adapter_signature != "bot_private_relay:adapter:bot_relay":
             params["continue_send"] = False
             return EventDecision.STOP, params
         relay_context = message.extra.get("relay_context", {}) if hasattr(message, "extra") else {}
