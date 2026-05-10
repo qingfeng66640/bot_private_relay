@@ -67,6 +67,11 @@
       "dependencies": []
     },
     {
+      "component_type": "service",
+      "component_name": "relay_memory_bridge",
+      "dependencies": []
+    },
+    {
       "component_type": "router",
       "component_name": "bot_private_relay",
       "dependencies": []

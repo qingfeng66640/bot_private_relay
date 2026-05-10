@@ -9,6 +9,7 @@ from .chatter import BotRelayChatter
 from .command import RelayCommand
 from .config import BotPrivateRelayConfig
 from .event_handler import LoopGuardEventHandler
+from .memory_bridge import MemoryBridgeService
 from .relay_actions import (
     BotRelayPassAndWaitAction,
     BotRelaySendTextAction,
@@ -52,5 +53,6 @@ class BotPrivateRelayPlugin(BasePlugin):
             LoopGuardEventHandler,
             RelayCommand,
             RelayStateService,
+            MemoryBridgeService,
             BotPrivateRelayRouter,
         ]

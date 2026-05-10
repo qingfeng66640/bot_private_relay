@@ -15,7 +15,7 @@ class RelayCommand(BaseCommand):
 
     command_name = "relay"
     command_description = "Inspect bot private relay runtime status"
-    permission_level = PermissionLevel.USER
+    permission_level = PermissionLevel.OWNER
 
     @cmd_route("status")
     async def status(self) -> tuple[bool, str]:

@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from src.app.plugin_system.base import BaseRouter
 
-from .service import RelayStateService
-
-
 class BotPrivateRelayRouter(BaseRouter):
     """Minimal management router for plugin-local inspection."""
 
@@ -23,10 +20,9 @@ class BotPrivateRelayRouter(BaseRouter):
 
         @self.app.get("/stats")
         async def stats() -> dict[str, object]:
-            service = RelayStateService(self.plugin)
             return {
-                "presence_count": len(service.presence_snapshot()),
-                "session_count": len(service.session_snapshot()),
-                "memory_candidate_count": len(service.memory_candidate_snapshot()),
-                "audit_count": len(service.audit_snapshot()),
+                "ok": True,
+                "plugin": "bot_private_relay",
+                "platform": "bot_relay",
+                "debug_surface": "limited",
             }
