@@ -228,6 +228,89 @@ def test_bot_relay_chatter_sub_agent_skips_when_expect_reply_false() -> None:
     assert decision["should_respond"] is False
 
 
+def test_bot_relay_prompt_extra_contains_relay_summary() -> None:
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    message = type(
+        "Msg",
+        (),
+        {
+            "extra": {
+                "relay_context": {
+                    "peer_bot_name": "流光",
+                    "peer_bot_id": "114514",
+                    "channel": "transaction",
+                    "intent": "request",
+                    "state": "pending_reply",
+                    "phase": None,
+                    "expect_reply": True,
+                    "reply_budget": 3,
+                    "terminal": False,
+                }
+            }
+        },
+    )()
+    stream = type(
+        "Stream",
+        (),
+        {
+            "context": type(
+                "Context",
+                (),
+                {
+                    "unread_messages": [message],
+                    "current_message": None,
+                    "history_messages": [],
+                },
+            )()
+        },
+    )()
+    extra = chatter._build_relay_extra(stream)
+    assert "对端 bot：流光（id=114514）" in extra
+    assert "channel：transaction" in extra
+    assert "intent：request" in extra
+    assert "reply_budget：3" in extra
+
+
+def test_bot_relay_prompt_extra_warns_when_no_reply_expected() -> None:
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    message = type(
+        "Msg",
+        (),
+        {
+            "extra": {
+                "relay_context": {
+                    "peer_bot_name": "流光",
+                    "peer_bot_id": "114514",
+                    "channel": "transaction",
+                    "intent": "notify",
+                    "expect_reply": False,
+                    "reply_budget": 0,
+                    "terminal": True,
+                }
+            }
+        },
+    )()
+    stream = type(
+        "Stream",
+        (),
+        {
+            "context": type(
+                "Context",
+                (),
+                {
+                    "unread_messages": [message],
+                    "current_message": None,
+                    "history_messages": [],
+                },
+            )()
+        },
+    )()
+    extra = chatter._build_relay_extra(stream)
+    assert "当前协议不期待你自动继续回复" in extra
+
+
 def test_loop_guard_received_dedup_and_sent_boundary() -> None:
     store.reset_state()
     handler = LoopGuardEventHandler(plugin=BotPrivateRelayPlugin(build_config()))
