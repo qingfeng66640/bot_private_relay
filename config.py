@@ -1,7 +1,10 @@
 """Bot private relay plugin configuration.
 
-Production deployments must use Neo-MoFox's standard configuration creation and
-loading flow. Any hand-written config files used by tests are dev/test only.
+Production deployments use Neo-MoFox's standard plugin config loading flow:
+``BaseConfig.get_default_path()`` resolves to
+``config/plugins/bot_private_relay/config.toml`` and is read automatically by
+``config_manager`` during plugin load.  Any hand-written config files kept
+inside the plugin directory are dev/test only.
 """
 
 from __future__ import annotations
@@ -23,12 +26,29 @@ class PartnerSection(SectionBase):
 
 
 class BotPrivateRelayConfig(BaseConfig):
-    """Configuration for the bot private relay plugin."""
+    """Configuration for the bot private relay plugin.
+
+    Production setup: edit ``config/plugins/bot_private_relay/config.toml``
+    (created automatically by the framework on first load).  A minimal
+    production TOML::
+
+        [relay]
+        bot_id = "223123"
+        bot_name = "清风"
+        relay_url = "mqtt://8.163.34.70:1883"
+
+        [partners.bot_b]
+        bot_id = "114514"
+        bot_name = "流光"
+
+        [presence]
+        allowed_partner_bots = ["114514"]
+    """
 
     config_name: ClassVar[str] = "config"
     config_description: ClassVar[str] = "Bot private relay configuration"
 
-    @config_section("relay", title="Relay", tag="plugin", order=0)
+    @config_section("relay", title="Relay", tag="plugin")
     class RelaySection(SectionBase):
         """Relay identity and broker options."""
 
@@ -40,13 +60,13 @@ class BotPrivateRelayConfig(BaseConfig):
         default_ttl: int = Field(default=4, description="Default relay hop TTL")
         default_reply_budget: int = Field(default=3, description="Default request reply budget")
 
-    @config_section("partners", title="Partners", tag="plugin", order=1)
+    @config_section("partners", title="Partners", tag="plugin")
     class PartnersSection(SectionBase):
         """Partner mapping for local tests and simple deployments."""
 
         bot_b: PartnerSection = Field(default_factory=PartnerSection)
 
-    @config_section("presence", title="Presence", tag="plugin", order=2)
+    @config_section("presence", title="Presence", tag="plugin")
     class PresenceSection(SectionBase):
         """Presence and allowlist settings."""
 

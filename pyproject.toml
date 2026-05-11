@@ -1,3 +1,6 @@
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:websockets.legacy",
+]
