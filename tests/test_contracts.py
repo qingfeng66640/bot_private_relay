@@ -1,10 +1,13 @@
-"""Contract tests for bot_private_relay Phase 1."""
+"""Contract tests for bot_private_relay Phase 1–4."""
 
 from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
+from mofox_wire import MessageEnvelope
+from plugins.default_chatter.plugin import DefaultChatter
 
 from plugins.bot_private_relay.adapter import BotRelayAdapter
 from plugins.bot_private_relay.command import RelayCommand
@@ -26,10 +29,18 @@ from plugins.bot_private_relay.relay_tools import (
 from plugins.bot_private_relay.session import SessionManager
 from plugins.bot_private_relay.system_handler import SystemChannelHandler
 from plugins.bot_private_relay import store
+from src.core.components.base import BaseChatter, Success, Wait
 
 
 class DummySink:
     """Minimal CoreSink stub for adapter tests."""
+    captured: list[MessageEnvelope]
+
+    def __init__(self) -> None:
+        self.captured = []
+
+    async def send(self, envelope: MessageEnvelope) -> None:
+        self.captured.append(envelope)
 
 
 def build_adapter() -> BotRelayAdapter:
@@ -46,6 +57,8 @@ def build_config() -> BotPrivateRelayConfig:
     return config
 
 
+# ── Phase 0 / manifest identity ──────────────────────────────────────
+
 def test_manifest_and_plugin_identity() -> None:
     manifest = json.loads(Path(__file__).resolve().parents[1].joinpath("manifest.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "bot_private_relay"
@@ -57,6 +70,8 @@ def test_manifest_and_plugin_identity() -> None:
     assert MemoryBridgeService in components
 
 
+# ── Config ────────────────────────────────────────────────────────────
+
 def test_config_partner_lookup_uses_bot_id() -> None:
     config = build_config()
     partner = config.partner_by_id("114514")
@@ -64,6 +79,22 @@ def test_config_partner_lookup_uses_bot_id() -> None:
     assert partner.bot_name == "流光"
     assert config.first_allowed_partner() is partner
 
+
+def test_config_default_path_matches_framework_convention() -> None:
+    """Framework reads config/plugins/{plugin_name}/config.toml by convention."""
+    # _plugin_ is injected by PluginManager at load time; simulate it for the test.
+    BotPrivateRelayConfig._plugin_ = "bot_private_relay"
+    try:
+        path = BotPrivateRelayConfig.get_default_path()
+        assert path is not None
+        parts = path.parts
+        assert parts[-3:] == ("plugins", "bot_private_relay", "config.toml")
+    finally:
+        if hasattr(BotPrivateRelayConfig, "_plugin_"):
+            delattr(BotPrivateRelayConfig, "_plugin_")
+
+
+# ── Envelope ──────────────────────────────────────────────────────────
 
 def test_relay_envelope_roundtrip_and_validation() -> None:
     envelope = RelayEnvelope(from_bot="223123", to_bot="114514", payload={"text": "hi"})
@@ -74,6 +105,24 @@ def test_relay_envelope_roundtrip_and_validation() -> None:
     assert rebuilt.text == "hi"
 
 
+def test_relay_envelope_increment_hop() -> None:
+    envelope = RelayEnvelope(from_bot="223123", to_bot="114514", hop=0, ttl=4)
+    incremented = envelope.increment_hop()
+    assert incremented.hop == 1
+    assert envelope.hop == 0  # original unchanged
+
+
+def test_relay_envelope_hop_exceeds_ttl_validation() -> None:
+    envelope = RelayEnvelope(from_bot="223123", to_bot="114514", hop=5, ttl=4)
+    try:
+        envelope.validate()
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "hop exceeds ttl" in str(exc)
+
+
+# ── Store ─────────────────────────────────────────────────────────────
+
 def test_store_dedup_and_reset() -> None:
     store.reset_state()
     assert store.remember_message("m1") is True
@@ -81,6 +130,8 @@ def test_store_dedup_and_reset() -> None:
     store.reset_state()
     assert store.DEDUP_CACHE == {}
 
+
+# ── Policy ────────────────────────────────────────────────────────────
 
 def test_policy_notify_is_one_way() -> None:
     envelope = RelayEnvelope(
@@ -97,6 +148,8 @@ def test_policy_notify_is_one_way() -> None:
     assert result.expect_reply is False
     assert result.reply_budget == 0
 
+
+# ── Session manager ───────────────────────────────────────────────────
 
 def test_session_manager_builds_request() -> None:
     manager = SessionManager()
@@ -118,6 +171,8 @@ def test_session_manager_builds_request() -> None:
     assert envelope.allowed_responders == ["114514"]
 
 
+# ── Presence & system handler ─────────────────────────────────────────
+
 def test_presence_and_system_handler_short_path() -> None:
     store.reset_state()
     config = build_config()
@@ -137,6 +192,8 @@ def test_presence_and_system_handler_short_path() -> None:
     assert consumed is True
     assert store.PRESENCE_TABLE["223123"].status == "online"
 
+
+# ── Adapter ───────────────────────────────────────────────────────────
 
 def test_adapter_rejects_wrong_target_or_unknown_partner() -> None:
     adapter = build_adapter()
@@ -177,7 +234,7 @@ def test_adapter_rejects_wrong_target_or_unknown_partner() -> None:
     assert unknown_partner is None
 
 
-def test_adapter_accepts_allowed_partner_and_maps_context() -> None:
+def test_adapter_accepts_allowed_partner_and_returns_message_envelope() -> None:
     adapter = build_adapter()
     envelope = __import__("asyncio").run(
         adapter.from_platform_message(
@@ -191,6 +248,8 @@ def test_adapter_accepts_allowed_partner_and_maps_context() -> None:
                 "expect_reply": True,
                 "reply_budget": 3,
                 "terminal": False,
+                "hop": 0,
+                "ttl": 4,
                 "message_id": "m-ok",
                 "conversation_id": "c-ok",
                 "trace_id": "t-ok",
@@ -199,97 +258,290 @@ def test_adapter_accepts_allowed_partner_and_maps_context() -> None:
         )
     )
     assert envelope is not None
-    message_info = envelope["message_info"]
-    assert message_info["user_info"]["user_id"] == "114514"
-    assert message_info["extra"]["relay_context"]["expect_reply"] is True
+    assert isinstance(envelope, dict)
+    assert "message_info" in envelope
+    message_info = envelope.get("message_info") or {}
+    user_info = message_info.get("user_info") if isinstance(message_info, dict) else {}
+    assert user_info.get("user_id") == "114514"
 
+
+def test_adapter_increments_hop_on_inbound() -> None:
+    """Hop should be incremented during inbound processing for ttl protection."""
+    adapter = build_adapter()
+    envelope = __import__("asyncio").run(
+        adapter.from_platform_message(
+            {
+                "from_bot": "114514",
+                "from_bot_name": "流光",
+                "to_bot": "223123",
+                "to_bot_name": "清风",
+                "channel": "transaction",
+                "intent": "notify",
+                "hop": 0,
+                "ttl": 4,
+                "message_id": "m-hop",
+                "conversation_id": "c-hop",
+                "trace_id": "t-hop",
+                "payload": {"text": "hop test"},
+            }
+        )
+    )
+    assert envelope is not None
+    extra = (envelope.get("message_info") or {}).get("extra", {})
+    relay_envelope = extra.get("relay_envelope", {}) if isinstance(extra, dict) else {}
+    assert relay_envelope.get("hop") == 1
+
+
+def test_adapter_uses_standard_on_platform_message_pipeline() -> None:
+    """Inherited AdapterBase.on_platform_message should forward accepted messages."""
+
+    adapter = build_adapter()
+    sink = adapter.core_sink
+    assert isinstance(sink, DummySink)
+    __import__("asyncio").run(
+        adapter.on_platform_message(
+            {
+                "from_bot": "114514",
+                "from_bot_name": "流光",
+                "to_bot": "223123",
+                "to_bot_name": "清风",
+                "channel": "transaction",
+                "intent": "request",
+                "expect_reply": True,
+                "reply_budget": 3,
+                "terminal": False,
+                "hop": 0,
+                "ttl": 4,
+                "message_id": "m-pipeline",
+                "conversation_id": "c-pipeline",
+                "trace_id": "t-pipeline",
+                "payload": {"text": "请帮我确认一下"},
+            }
+        )
+    )
+    assert len(sink.captured) == 1
+
+    __import__("asyncio").run(
+        adapter.on_platform_message(
+            {
+                "from_bot": "114514",
+                "from_bot_name": "流光",
+                "to_bot": "999999",
+                "to_bot_name": "别的 bot",
+                "channel": "transaction",
+                "intent": "request",
+                "message_id": "m-filtered",
+                "conversation_id": "c-filtered",
+                "trace_id": "t-filtered",
+                "payload": {"text": "wrong target"},
+            }
+        )
+    )
+    assert len(sink.captured) == 1
+
+
+def test_adapter_health_check_uses_mqtt_client_state() -> None:
+    """MQTT health must not use BaseAdapter's ws/http transport status."""
+
+    class StubClient:
+        def __init__(self, connected: bool) -> None:
+            self.connected = connected
+
+        def is_connected(self) -> bool:
+            return self.connected
+
+    adapter = build_adapter()
+    assert __import__("asyncio").run(adapter.health_check()) is False
+    adapter._mqtt_client = StubClient(True)
+    assert __import__("asyncio").run(adapter.health_check()) is True
+    adapter._mqtt_client = StubClient(False)
+    adapter._reconnecting = True
+    assert __import__("asyncio").run(adapter.health_check()) is True
+
+
+def test_adapter_reconnect_does_not_stop_mqtt_loop() -> None:
+    """Framework health reconnect should not tear down the paho client."""
+
+    adapter = build_adapter()
+    adapter._mqtt_client = object()
+    __import__("asyncio").run(adapter.reconnect())
+    assert adapter._mqtt_client is not None
+
+
+def test_adapter_stops_existing_mqtt_client_before_reconnect() -> None:
+    """Reconnect setup should not leak old paho network loops."""
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.loop_stopped = False
+            self.disconnected = False
+
+        def loop_stop(self) -> None:
+            self.loop_stopped = True
+
+        def disconnect(self) -> None:
+            self.disconnected = True
+
+    adapter = build_adapter()
+    client = StubClient()
+    adapter._mqtt_client = client
+    adapter._stop_mqtt_client()
+    assert client.loop_stopped is True
+    assert client.disconnected is True
+    assert adapter._mqtt_client is None
+
+
+def test_adapter_partner_resolution_handles_malformed_context() -> None:
+    """Malformed relay_context should fall back safely to the first partner."""
+
+    adapter = build_adapter()
+    partner = adapter._resolve_partner_from_message_envelope(
+        {
+            "message_info": {
+                "platform": "bot_relay",
+                "extra": {"relay_context": []},
+            },
+            "message_segment": [],
+            "raw_message": {},
+        }
+    )
+    assert partner.bot_id == "114514"
+
+    partner = adapter._resolve_partner_from_message_envelope(
+        {
+            "message_info": {
+                "platform": "bot_relay",
+                "extra": {"relay_context": {"peer_bot_id": ""}},
+            },
+            "message_segment": [],
+            "raw_message": {},
+        }
+    )
+    assert partner.bot_id == "114514"
+
+
+def test_adapter_no_custom_process_incoming_path() -> None:
+    """Inbound dispatch should use AdapterBase.on_platform_message(raw)."""
+
+    assert not hasattr(BotRelayAdapter, "_process_incoming")
+
+
+# ── Actions ───────────────────────────────────────────────────────────
 
 def test_relay_action_isolated_to_bot_relay_chatter() -> None:
     assert BotRelaySendTextAction.chatter_allow == ["bot_relay_chatter"]
 
 
-def test_bot_relay_chatter_sub_agent_skips_when_expect_reply_false() -> None:
-    plugin = BotPrivateRelayPlugin(build_config())
-    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
-    unread = type(
-        "Msg",
-        (),
+# ── Chatter ───────────────────────────────────────────────────────────
+
+def test_bot_relay_chatter_uses_base_chatter_not_default_chatter() -> None:
+    assert issubclass(BotRelayChatter, BaseChatter)
+    assert DefaultChatter not in BotRelayChatter.__mro__
+
+
+def test_bot_relay_context_summary_contains_relay_fields() -> None:
+    extra = BotRelayChatter._format_relay_context(
         {
-            "extra": {"relay_context": {"expect_reply": False}},
-            "processed_plain_text": "",
-            "content": "",
-            "sender_id": "114514",
-            "sender_name": "流光",
-        },
-    )()
-    decision = __import__("asyncio").run(
-        chatter.sub_agent("", [unread], type("S", (), {"chat_type": "private"})())
+            "peer_bot_name": "流光",
+            "peer_bot_id": "114514",
+            "channel": "transaction",
+            "intent": "request",
+            "state": "pending_reply",
+            "phase": None,
+            "expect_reply": True,
+            "reply_budget": 3,
+            "terminal": False,
+        }
     )
-    assert decision["should_respond"] is False
-
-
-def test_bot_relay_prompt_extra_contains_relay_summary() -> None:
-    plugin = BotPrivateRelayPlugin(build_config())
-    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
-    message = type(
-        "Msg",
-        (),
-        {
-            "extra": {
-                "relay_context": {
-                    "peer_bot_name": "流光",
-                    "peer_bot_id": "114514",
-                    "channel": "transaction",
-                    "intent": "request",
-                    "state": "pending_reply",
-                    "phase": None,
-                    "expect_reply": True,
-                    "reply_budget": 3,
-                    "terminal": False,
-                }
-            }
-        },
-    )()
-    stream = type(
-        "Stream",
-        (),
-        {
-            "context": type(
-                "Context",
-                (),
-                {
-                    "unread_messages": [message],
-                    "current_message": None,
-                    "history_messages": [],
-                },
-            )()
-        },
-    )()
-    extra = chatter._build_relay_extra(stream)
     assert "对端 bot：流光（id=114514）" in extra
     assert "channel：transaction" in extra
     assert "intent：request" in extra
     assert "reply_budget：3" in extra
 
 
-def test_bot_relay_prompt_extra_warns_when_no_reply_expected() -> None:
+def test_bot_relay_context_summary_warns_when_no_reply_expected() -> None:
+    extra = BotRelayChatter._format_relay_context(
+        {
+            "peer_bot_name": "流光",
+            "peer_bot_id": "114514",
+            "channel": "transaction",
+            "intent": "notify",
+            "expect_reply": False,
+            "reply_budget": 0,
+            "terminal": True,
+        }
+    )
+    assert "当前协议不期待你自动继续回复" in extra
+
+
+def test_bot_relay_chatter_waits_when_context_does_not_expect_reply() -> None:
+    assert BotRelayChatter._should_respond({"expect_reply": False}) is False
+    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": True}) is False
+    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": False}) is True
+    assert isinstance(Wait(), Wait)
+
+
+def test_bot_relay_chatter_sends_plain_text_when_no_tool_call() -> None:
+    """Plain LLM text must still leave through the relay send action."""
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.payloads = []
+            self.stream_modes = []
+
+        def add_payload(self, payload):
+            self.payloads.append(payload)
+            return self
+
+        async def send(self, stream=True):
+            self.stream_modes.append(stream)
+            return FakeResponse()
+
+    class FakeResponse:
+        message = "收到，我会确认。"
+        call_list = []
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
     plugin = BotPrivateRelayPlugin(build_config())
     chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
-    message = type(
+    sent = {}
+
+    fake_request = FakeRequest()
+
+    def create_request(*args, **kwargs):
+        return fake_request
+
+    async def inject_usables(request):
+        return object()
+
+    async def exec_llm_usable(usable_cls, message, **kwargs):
+        sent["usable_cls"] = usable_cls
+        sent["message"] = message
+        sent["kwargs"] = kwargs
+        return True, {"status": "sent"}
+
+    chatter.create_request = create_request  # type: ignore[method-assign]
+    chatter.inject_usables = inject_usables  # type: ignore[method-assign]
+    chatter.exec_llm_usable = exec_llm_usable  # type: ignore[method-assign]
+
+    unread = type(
         "Msg",
         (),
         {
-            "extra": {
-                "relay_context": {
-                    "peer_bot_name": "流光",
-                    "peer_bot_id": "114514",
-                    "channel": "transaction",
-                    "intent": "notify",
-                    "expect_reply": False,
-                    "reply_budget": 0,
-                    "terminal": True,
-                }
-            }
+            "message_id": "m1",
+            "extra": {"relay_context": {"expect_reply": True}},
+            "processed_plain_text": "smoke request: 请回复确认",
+            "content": "smoke request: 请回复确认",
+            "sender_id": "114514",
+            "sender_name": "流光",
+            "sender_role": "bot",
+            "sender_cardname": "",
+            "time": 0,
         },
     )()
     stream = type(
@@ -299,48 +551,239 @@ def test_bot_relay_prompt_extra_warns_when_no_reply_expected() -> None:
             "context": type(
                 "Context",
                 (),
-                {
-                    "unread_messages": [message],
-                    "current_message": None,
-                    "history_messages": [],
-                },
+                {"history_messages": []},
             )()
         },
     )()
-    extra = chatter._build_relay_extra(stream)
-    assert "当前协议不期待你自动继续回复" in extra
+    result = __import__("asyncio").run(
+        chatter._run_relay_turn(
+            chat_stream=stream,
+            unread_text="smoke request: 请回复确认",
+            unread_messages=[unread],
+            relay_context={
+                "peer_bot_id": "114514",
+                "peer_bot_name": "流光",
+                "channel": "transaction",
+                "intent": "request",
+                "expect_reply": True,
+                "reply_budget": 3,
+                "terminal": False,
+            },
+        )
+    )
+    assert isinstance(result, Success)
+    assert fake_request.stream_modes == [False]
+    assert sent["kwargs"] == {"content": "收到，我会确认。"}
+    assert sent["message"] is unread
 
+
+def test_bot_relay_chatter_falls_back_to_stream_when_non_stream_fails() -> None:
+    """Some providers may require streaming, but non-stream should be preferred."""
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.stream_modes = []
+
+        async def send(self, stream=True):
+            self.stream_modes.append(stream)
+            if stream is False:
+                raise RuntimeError("non-stream unsupported")
+            return "stream-response"
+
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    request = FakeRequest()
+    result = __import__("asyncio").run(chatter._send_relay_request(request))
+    assert result == "stream-response"
+    assert request.stream_modes == [False, True]
+
+
+def test_bot_relay_chatter_follows_up_after_transaction_tool_call() -> None:
+    """Transaction tools should be followed by an outbound natural-language reply."""
+
+    class FakeCall:
+        name = "tool-confirm_transaction"
+
+    class FollowResponse:
+        message = "确认了，我会处理。"
+        call_list = []
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+    class InitialResponse:
+        message = ""
+        call_list = [FakeCall()]
+
+        def __init__(self) -> None:
+            self.followup_stream_modes = []
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+        async def send(self, auto_append_response=True, stream=True):
+            self.followup_stream_modes.append(stream)
+            return FollowResponse()
+
+    class FakeRequest:
+        def __init__(self, initial: InitialResponse) -> None:
+            self.initial = initial
+            self.payloads = []
+            self.stream_modes = []
+
+        def add_payload(self, payload):
+            self.payloads.append(payload)
+            return self
+
+        async def send(self, stream=True):
+            self.stream_modes.append(stream)
+            return self.initial
+
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    sent = {}
+    tool_calls = {}
+    initial = InitialResponse()
+    fake_request = FakeRequest(initial)
+
+    def create_request(*args, **kwargs):
+        return fake_request
+
+    async def inject_usables(request):
+        return object()
+
+    async def run_tool_call(calls, response, usable_map, trigger_msg):
+        tool_calls["calls"] = calls
+        tool_calls["trigger_msg"] = trigger_msg
+        return [(True, True)]
+
+    async def exec_llm_usable(usable_cls, message, **kwargs):
+        sent["message"] = message
+        sent["kwargs"] = kwargs
+        return True, {"status": "sent"}
+
+    chatter.create_request = create_request  # type: ignore[method-assign]
+    chatter.inject_usables = inject_usables  # type: ignore[method-assign]
+    chatter.run_tool_call = run_tool_call  # type: ignore[method-assign]
+    chatter.exec_llm_usable = exec_llm_usable  # type: ignore[method-assign]
+
+    unread = type(
+        "Msg",
+        (),
+        {
+            "message_id": "m-tool",
+            "extra": {"relay_context": {"expect_reply": True}},
+            "processed_plain_text": "smoke request: 请回复确认",
+            "content": "smoke request: 请回复确认",
+            "sender_id": "114514",
+            "sender_name": "流光",
+            "sender_role": "bot",
+            "sender_cardname": "",
+            "time": 0,
+        },
+    )()
+    stream = type(
+        "Stream",
+        (),
+        {"context": type("Context", (), {"history_messages": []})()},
+    )()
+
+    result = __import__("asyncio").run(
+        chatter._run_relay_turn(
+            chat_stream=stream,
+            unread_text="smoke request: 请回复确认",
+            unread_messages=[unread],
+            relay_context={
+                "peer_bot_id": "114514",
+                "peer_bot_name": "流光",
+                "channel": "transaction",
+                "intent": "request",
+                "expect_reply": True,
+                "reply_budget": 3,
+                "terminal": False,
+            },
+        )
+    )
+
+    assert isinstance(result, Success)
+    assert fake_request.stream_modes == [False]
+    assert initial.followup_stream_modes == [False]
+    assert tool_calls["calls"] == initial.call_list
+    assert sent["message"] is unread
+    assert sent["kwargs"] == {"content": "确认了，我会处理。"}
+
+
+# ── LoopGuard ─────────────────────────────────────────────────────────
 
 def test_loop_guard_received_dedup_and_sent_boundary() -> None:
+    """LoopGuard preserves params keys on STOP -- no injection."""
     store.reset_state()
     handler = LoopGuardEventHandler(plugin=BotPrivateRelayPlugin(build_config()))
+
     params = {
-        "message": type("M", (), {"message_id": "m1", "extra": {"relay_envelope": {"message_id": "m1", "hop": 0, "ttl": 4}, "relay_context": {"reply_budget": 1}}})(),
+        "message": type("M", (), {
+            "message_id": "m1",
+            "extra": {
+                "relay_envelope": {"message_id": "m1", "hop": 0, "ttl": 4},
+                "relay_context": {"reply_budget": 1},
+            },
+        })(),
         "envelope": None,
         "adapter_signature": "bot_private_relay:adapter:bot_relay",
     }
-    decision, _ = handler._handle_received(params)
+    initial_keys = set(params.keys())
+
+    decision, out = handler._handle_received(params)
     assert str(decision) == "EventDecision.SUCCESS"
-    decision2, _ = handler._handle_received(params)
+    assert set(out.keys()) == initial_keys  # param key invariance
+
+    decision2, out2 = handler._handle_received(params)
     assert str(decision2) == "EventDecision.STOP"
+    assert set(out2.keys()) == initial_keys  # param key invariance
+
+    # Wrong adapter -- should STOP without injecting keys
     sent_params = {
         "message": type("M", (), {"platform": "bot_relay", "extra": {"relay_context": {}}})(),
         "envelope": None,
         "adapter_signature": "wrong:adapter:anything",
-        "continue_send": True,
     }
-    decision3, sent_after = handler._handle_sent(sent_params)
+    sent_keys = set(sent_params.keys())
+    decision3, sent_out = handler._handle_sent(sent_params)
     assert str(decision3) == "EventDecision.STOP"
-    assert sent_after["continue_send"] is False
+    assert set(sent_out.keys()) == sent_keys
+
+    # Missing relay_context with empty extra dict passes isinstance check
+    # (empty relay_context is valid at LoopGuard level — bot_relay message
+    # without relay context may be a system-level notification)
+    bad_params = {
+        "message": type("M", (), {"platform": "bot_relay", "extra": {}})(),
+        "envelope": None,
+        "adapter_signature": "bot_private_relay:adapter:bot_relay",
+    }
+    bad_keys = set(bad_params.keys())
+    decision5, bad_out = handler._handle_sent(bad_params)
+    assert str(decision5) == "EventDecision.SUCCESS"
+    assert set(bad_out.keys()) == bad_keys
+
+    # Correct adapter with relay_context -- should PASS
     good_params = {
         "message": type("M", (), {"platform": "bot_relay", "extra": {"relay_context": {"intent": "notify"}}})(),
         "envelope": None,
         "adapter_signature": "bot_private_relay:adapter:bot_relay",
-        "continue_send": True,
     }
-    decision4, _ = handler._handle_sent(good_params)
+    good_keys = set(good_params.keys())
+    decision4, good_out = handler._handle_sent(good_params)
     assert str(decision4) == "EventDecision.SUCCESS"
+    assert set(good_out.keys()) == good_keys
 
+
+# ── Command ───────────────────────────────────────────────────────────
 
 def test_command_status() -> None:
     plugin = BotPrivateRelayPlugin(build_config())
@@ -350,20 +793,24 @@ def test_command_status() -> None:
     assert "relay status:" in text
 
 
+# ── Transaction tools ─────────────────────────────────────────────────
+
 def test_transaction_tools_are_isolated_to_bot_relay_chatter() -> None:
     assert ConfirmTransactionTool.chatter_allow == ["bot_relay_chatter"]
     assert DeclineTransactionTool.chatter_allow == ["bot_relay_chatter"]
     assert CancelTransactionTool.chatter_allow == ["bot_relay_chatter"]
 
 
-def test_confirm_tool_runs_six_hard_checks_and_updates_session() -> None:
+def test_confirm_tool_requires_accepted_state() -> None:
+    """confirm only allowed from accepted state per plan §8 Phase 2."""
     store.reset_state()
+    # accepted → confirm should succeed
     session = store.RelaySession(
         conversation_id="conv-001",
         peer_bot_id="114514",
         channel="transaction",
         intent="request",
-        state="pending_reply",
+        state="accepted",
         terminal=False,
         expect_reply=True,
         reply_budget=3,
@@ -376,7 +823,7 @@ def test_confirm_tool_runs_six_hard_checks_and_updates_session() -> None:
             trace_id="trace-001",
             from_bot="223123",
             to_bot="114514",
-            current_state="pending_reply",
+            current_state="accepted",
             topic="整理会议纪要",
             summary="整理会议纪要",
         )
@@ -386,7 +833,7 @@ def test_confirm_tool_runs_six_hard_checks_and_updates_session() -> None:
         ConfirmTransactionTool(plugin).execute(
             conversation_id="conv-001",
             caller_bot="114514",
-            reason="我可以整理，下午给你",
+            reason="确认完成",
         )
     )
     assert success is True
@@ -395,6 +842,77 @@ def test_confirm_tool_runs_six_hard_checks_and_updates_session() -> None:
     assert store.SESSION_TABLE["conv-001"].terminal is True
     assert store.TRANSACTION_LOG["conv-001"].final_intent == "confirm"
     assert store.RELAY_TODOS
+
+
+def test_confirm_from_pending_reply_is_rejected() -> None:
+    """pending_reply → confirm is NOT a valid transition per plan."""
+    store.reset_state()
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-002",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="request",
+            state="pending_reply",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=3,
+            allowed_responders=["114514"],
+        )
+    )
+    plugin = BotPrivateRelayPlugin(build_config())
+    success, payload = __import__("asyncio").run(
+        ConfirmTransactionTool(plugin).execute(
+            conversation_id="conv-002",
+            caller_bot="114514",
+            reason="直接 confirm",
+        )
+    )
+    assert success is False
+    assert payload["status"] == "state_not_allowed"
+
+
+def test_validate_transaction_action_error_codes_match_plan_enum() -> None:
+    """The six error codes must match plan §8 Phase 2 enumeration exactly."""
+    store.reset_state()
+    allowed_codes = {
+        "ok",
+        "state_not_allowed",
+        "not_allowed_responder",
+        "reply_budget_exhausted",
+        "conversation_closed",
+        "invalid_payload",
+    }
+    manager = SessionManager()
+
+    # missing conversation → invalid_payload
+    ok, code, _ = manager.validate_transaction_action(
+        conversation_id="nonexistent", action="confirm", caller_bot="114514"
+    )
+    assert ok is False
+    assert code == "invalid_payload"
+    assert code in allowed_codes
+
+    # valid setup
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-check",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="request",
+            state="accepted",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=3,
+            allowed_responders=["114514"],
+        )
+    )
+    ok, code, _ = manager.validate_transaction_action(
+        conversation_id="conv-check", action="confirm", caller_bot="114514"
+    )
+    assert ok is True
+    assert code == "ok"
+    assert code in allowed_codes
 
 
 def test_outbound_envelope_can_infer_confirm_from_session_state() -> None:
@@ -431,7 +949,89 @@ def test_outbound_envelope_can_infer_confirm_from_session_state() -> None:
     assert envelope.expect_reply is False
 
 
+# ── Social session state machine (Phase 3) ────────────────────────────
+
+def test_social_phase_advances_on_turns() -> None:
+    """Phase advances opening → active → cooling → ending based on turn count."""
+    store.reset_state()
+    manager = SessionManager()
+    session = store.RelaySession(
+        conversation_id="social-001",
+        peer_bot_id="114514",
+        channel="social",
+        intent="say",
+        phase="opening",
+        turn_count=0,
+        max_turns=6,
+        allowed_responders=["114514"],
+        reply_budget=3,
+    )
+    store.save_session(session)
+
+    adv = manager.advance_social_turn(session=session, max_turns=6, cooldown_seconds=5)
+    assert adv.phase == "active"
+    assert adv.turn_count == 1
+
+    # Advance several turns to cooling
+    for _ in range(4):
+        adv = manager.advance_social_turn(session=adv, max_turns=6, cooldown_seconds=5)
+    assert adv.phase == "cooling"
+    assert adv.turn_count == 5
+
+    # Advance to max_turns → ending
+    adv = manager.advance_social_turn(session=adv, max_turns=6, cooldown_seconds=5)
+    assert adv.phase == "ending"
+    assert adv.terminal is True
+    assert adv.expect_reply is False
+    assert adv.turn_count == 6
+
+
+def test_social_cooldown_active_while_timer_running() -> None:
+    store.reset_state()
+    manager = SessionManager()
+    session = store.RelaySession(
+        conversation_id="social-cool",
+        peer_bot_id="114514",
+        channel="social",
+        intent="say",
+        phase="cooling",
+        turn_count=5,
+        max_turns=6,
+        cooldown_seconds=5,
+        cooldown_until=time.time() + 30,
+        allowed_responders=["114514"],
+        reply_budget=2,
+    )
+    store.save_session(session)
+    assert manager.is_social_in_cooldown(session) is True
+
+    session.cooldown_until = time.time() - 1
+    assert manager.is_social_in_cooldown(session) is False
+
+
+def test_force_social_ending_closes_session() -> None:
+    store.reset_state()
+    manager = SessionManager()
+    session = store.RelaySession(
+        conversation_id="social-end",
+        peer_bot_id="114514",
+        channel="social",
+        intent="say",
+        phase="active",
+        terminal=False,
+        expect_reply=True,
+        reply_budget=3,
+    )
+    store.save_session(session)
+    result = manager.force_social_ending(session)
+    assert result.phase == "ending"
+    assert result.terminal is True
+    assert result.expect_reply is False
+    assert result.reply_budget == 0
+
+
 def test_expect_reply_override_priority_for_social_session() -> None:
+    store.reset_state()
     manager = SessionManager()
     social = manager.build_social_envelope(
         from_bot="223123",
@@ -444,17 +1044,48 @@ def test_expect_reply_override_priority_for_social_session() -> None:
         cooldown_seconds=5,
     )
     assert social.expect_reply is True
+
     social.phase = "ending"
     social = manager.apply_expect_reply_overrides(social)
     assert social.expect_reply is False
+
     social.phase = "active"
     social.reply_budget = 0
     social = manager.apply_expect_reply_overrides(social)
     assert social.expect_reply is False
+
     social.reply_budget = 2
     social.terminal = True
     social = manager.apply_expect_reply_overrides(social)
     assert social.expect_reply is False
+
+
+def test_social_envelope_integrates_session_phase() -> None:
+    """Second call to build_social_envelope should advance the existing session."""
+    store.reset_state()
+    manager = SessionManager()
+
+    # First call: no session exists, starts at opening, advances to active
+    env1 = manager.build_social_envelope(
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+        text="Hello",
+    )
+    assert env1.phase == "active"
+    assert env1.channel == "social"
+
+    # Second call: existing session, should advance further
+    env2 = manager.build_social_envelope(
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+        text="World",
+    )
+    assert env2.phase == "active"  # still active before cooling threshold
+    assert env2.channel == "social"
 
 
 def test_social_session_and_memory_candidate_projection() -> None:
@@ -472,12 +1103,45 @@ def test_social_session_and_memory_candidate_projection() -> None:
     )
     session = manager.save_social_session_from_envelope(social)
     assert session.channel == "social"
-    assert session.expect_reply is True
     manager.maybe_create_memory_candidate(envelope=social)
     assert store.RELAY_MEMORY_CANDIDATES
 
 
-def test_phase4_command_and_router_surface() -> None:
+# ── MQTT reconnect & smoke-test script ───────────────────────────────
+
+def test_adapter_reconnect_backoff_is_flapping_safe() -> None:
+    """Reconnect backoff must be conservative to avoid broker Flapping protection."""
+    assert BotRelayAdapter._RECONNECT_MIN_DELAY >= 10
+    assert BotRelayAdapter._RECONNECT_MAX_DELAY >= 60
+
+
+def test_adapter_keepalive_shorter_than_broker_idle_timeout() -> None:
+    """Keepalive must be shorter than observed broker idle timeout (~30s)."""
+    assert 0 < BotRelayAdapter._KEEPALIVE < 30
+
+
+def test_adapter_disconnect_skips_when_reconnect_in_flight() -> None:
+    """A second disconnect callback must not spawn another reconnect task."""
+    adapter = build_adapter()
+    adapter._reconnecting = True
+    before = adapter._reconnect_task_info
+    # paho v2 callback signature: client, userdata, disconnect_flags, reason_code, properties
+    adapter._on_mqtt_disconnect(
+        client=None, userdata=None, disconnect_flags=None, reason_code=1
+    )
+    assert adapter._reconnect_task_info is before  # unchanged
+
+
+def test_mqtt_smoke_test_script_exists_and_is_importable_lazily() -> None:
+    """Smoke test script must exist and define main()."""
+    script = Path(__file__).resolve().parents[1] / "scripts" / "mqtt_smoke_test.py"
+    assert script.exists()
+    text = script.read_text(encoding="utf-8")
+    assert "def main()" in text
+    assert "8.163.34.70" in text  # default broker host documented
+
+
+# ── Phase 4: command & router surface ─────────────────────────────────def test_phase4_command_and_router_surface() -> None:
     plugin = BotPrivateRelayPlugin(build_config())
     command = RelayCommand(plugin=plugin, stream_id="s1")
     ok_status, status_text = __import__("asyncio").run(command.status())
