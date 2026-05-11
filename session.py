@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from uuid import uuid4
 
 from mofox_wire import MessageEnvelope
@@ -22,11 +23,10 @@ class SessionManager:
             "ack": "closed",
             "close": "closed",
             "cancel": "closed",
-            "confirm": "confirmed",
         },
-        "accepted": {"confirm": "closed", "decline": "closed", "cancel": "closed"},
+        "accepted": {"confirm": "confirmed", "decline": "closed", "cancel": "closed"},
         "reschedule_requested": {"accept": "accepted", "decline": "closed", "close": "closed", "cancel": "closed"},
-        "confirmed": {},
+        "confirmed": {"close": "closed"},
         "closed": {},
     }
     _SOCIAL_END_PHASES = {"ending", "closed"}
@@ -141,8 +141,28 @@ class SessionManager:
         phase: str = "opening",
         reply_budget: int = 3,
         cooldown_seconds: int = 0,
+        max_turns: int = 6,
     ) -> RelayEnvelope:
-        """Build a social-channel envelope with Phase 3 controls."""
+        """Build a social-channel envelope with Phase 3 state machine controls.
+
+        If a social session already exists for this peer, its current phase and
+        turn count are used instead of the caller-supplied defaults.
+        """
+
+        existing = self._find_social_session(to_bot)
+        if existing is not None and not existing.terminal:
+            existing = self.advance_social_turn(
+                session=existing, max_turns=max_turns, cooldown_seconds=cooldown_seconds
+            )
+            phase = existing.phase or phase
+            reply_budget = existing.reply_budget
+            cooldown_seconds = existing.cooldown_seconds
+        elif existing is not None:
+            phase = existing.phase or "closed"
+        else:
+            # First social message to this peer: advance from opening to active
+            if phase == "opening":
+                phase = "active"
 
         envelope = RelayEnvelope(
             from_bot=from_bot,
@@ -155,12 +175,20 @@ class SessionManager:
             phase=phase,
             reply_budget=reply_budget,
             cooldown_seconds=cooldown_seconds,
-            allowed_responders=[to_bot],
-            terminal=False,
-            expect_reply=True,
+            allowed_responders=[to_bot] if phase not in ("ending", "closed") else [],
+            terminal=phase in ("ending", "closed"),
+            expect_reply=phase not in ("ending", "closed"),
             state=None,
         )
         return self.apply_expect_reply_overrides(envelope)
+
+    def _find_social_session(self, peer_bot_id: str) -> store.RelaySession | None:
+        """Return a non-terminal social session for a peer bot."""
+        for session in store.SESSION_TABLE.values():
+            if session.peer_bot_id == peer_bot_id and session.channel == "social":
+                if (session.phase or "") not in ("closed",):
+                    return session
+        return None
 
     def apply_expect_reply_overrides(self, envelope: RelayEnvelope) -> RelayEnvelope:
         """Apply the frozen Phase 3 expect_reply override priority."""
@@ -224,7 +252,7 @@ class SessionManager:
 
         session = store.get_session(conversation_id)
         if session is None:
-            return False, "conversation_not_found", None
+            return False, "invalid_payload", None
         state = session.state or "created"
         if action not in self._TRANSITIONS.get(state, {}):
             return False, "state_not_allowed", session
@@ -293,6 +321,75 @@ class SessionManager:
         if state == "closed":
             return "close"
         return None
+
+    # ── Phase 3 social session state machine ──────────────────────────
+
+    _SOCIAL_PHASE_ORDER = ("opening", "active", "cooling", "ending", "closed")
+
+    @staticmethod
+    def _next_social_phase(current: str) -> str:
+        """Return the next social phase in the ordered chain."""
+        try:
+            idx = SessionManager._SOCIAL_PHASE_ORDER.index(current)
+            if idx + 1 < len(SessionManager._SOCIAL_PHASE_ORDER):
+                return SessionManager._SOCIAL_PHASE_ORDER[idx + 1]
+        except ValueError:
+            pass
+        return "closed"
+
+    def advance_social_turn(
+        self, *, session: store.RelaySession, max_turns: int = 6, cooldown_seconds: int = 0
+    ) -> store.RelaySession:
+        """Increment turn count and advance social phase when thresholds met.
+
+        Phase transitions:
+        - opening → active after 1 turn
+        - active → cooling when turn_count >= max_turns * 0.7
+        - cooling → ending when turn_count >= max_turns
+        - ending → closed when explicitly ended or budget exhausted
+        """
+        session.turn_count += 1
+        session.max_turns = max_turns
+        session.cooldown_seconds = cooldown_seconds
+
+        phase = session.phase or "opening"
+        turns = session.turn_count
+
+        if phase == "opening" and turns >= 1:
+            phase = "active"
+        if phase == "active" and turns >= int(max_turns * 0.7):
+            phase = "cooling"
+        if phase == "cooling" and turns >= max_turns:
+            phase = "ending"
+
+        if phase in ("ending", "closed"):
+            session.terminal = True
+            session.expect_reply = False
+            session.reply_budget = 0
+
+        if cooldown_seconds > 0 and phase == "cooling":
+            session.cooldown_until = time.time() + cooldown_seconds
+
+        session.phase = phase
+        store.save_session(session)
+        return session
+
+    def is_social_in_cooldown(self, session: store.RelaySession) -> bool:
+        """Return True if the session is in an active cooldown window."""
+        if session.channel != "social":
+            return False
+        if session.cooldown_until > time.time():
+            return True
+        return False
+
+    def force_social_ending(self, session: store.RelaySession) -> store.RelaySession:
+        """Immediately escalate a social session to ending."""
+        session.phase = "ending"
+        session.terminal = True
+        session.expect_reply = False
+        session.reply_budget = 0
+        store.save_session(session)
+        return session
 
 
 def _extract_text(message_envelope: MessageEnvelope) -> str:

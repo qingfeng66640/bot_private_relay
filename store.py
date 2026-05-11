@@ -34,6 +34,11 @@ class RelaySession:
     expect_reply: bool = False
     reply_budget: int = 0
     allowed_responders: list[str] = field(default_factory=list)
+    phase: str | None = None
+    turn_count: int = 0
+    max_turns: int = 6
+    cooldown_seconds: int = 0
+    cooldown_until: float = 0.0
     updated_at: float = field(default_factory=time.time)
 
 
