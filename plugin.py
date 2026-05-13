@@ -17,6 +17,7 @@ from .relay_actions import (
 )
 from .router import BotPrivateRelayRouter
 from .relay_tools import (
+    AcceptTransactionTool,
     CancelTransactionTool,
     ConfirmTransactionTool,
     DeclineTransactionTool,
@@ -47,6 +48,7 @@ class BotPrivateRelayPlugin(BasePlugin):
             BotRelaySendTextAction,
             BotRelayPassAndWaitAction,
             BotRelayStopConversationAction,
+            AcceptTransactionTool,
             ConfirmTransactionTool,
             DeclineTransactionTool,
             CancelTransactionTool,

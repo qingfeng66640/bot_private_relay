@@ -405,6 +405,7 @@ class BotRelayAdapter(BaseAdapter):
         system_handler = SystemChannelHandler(presence_manager)
         if system_handler.handle(relay_envelope):
             return None
+        self._session_manager.sync_inbound_transaction_session(relay_envelope)
         return MessageEnvelope(
             direction="incoming",
             message_info={

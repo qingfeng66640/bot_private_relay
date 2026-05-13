@@ -38,6 +38,11 @@
     },
     {
       "component_type": "tool",
+      "component_name": "accept_transaction",
+      "dependencies": []
+    },
+    {
+      "component_type": "tool",
       "component_name": "confirm_transaction",
       "dependencies": []
     },

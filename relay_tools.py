@@ -52,6 +52,14 @@ class _BaseRelayTransactionTool(BaseTool):
         }
 
 
+class AcceptTransactionTool(_BaseRelayTransactionTool):
+    """Accept a pending transaction request."""
+
+    tool_name = "accept_transaction"
+    tool_description = "接受事务请求并进入 accepted 状态，同时执行六项硬校验。"
+    action_intent = "accept"
+
+
 class ConfirmTransactionTool(_BaseRelayTransactionTool):
     """Confirm a pending transaction request."""
 

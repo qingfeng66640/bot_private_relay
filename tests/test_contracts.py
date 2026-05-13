@@ -22,6 +22,7 @@ from plugins.bot_private_relay.presence import PresenceManager
 from plugins.bot_private_relay.relay_actions import BotRelaySendTextAction
 from plugins.bot_private_relay.router import BotPrivateRelayRouter
 from plugins.bot_private_relay.relay_tools import (
+    AcceptTransactionTool,
     CancelTransactionTool,
     ConfirmTransactionTool,
     DeclineTransactionTool,
@@ -63,10 +64,17 @@ def test_manifest_and_plugin_identity() -> None:
     manifest = json.loads(Path(__file__).resolve().parents[1].joinpath("manifest.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "bot_private_relay"
     assert manifest["python_dependencies"] == ["paho-mqtt>=2.0"]
+    tools = {
+        item["component_name"]
+        for item in manifest["include"]
+        if item["component_type"] == "tool"
+    }
+    assert "accept_transaction" in tools
     assert BotPrivateRelayPlugin.plugin_name == "bot_private_relay"
     plugin = BotPrivateRelayPlugin(build_config())
     components = plugin.get_components()
     assert components
+    assert AcceptTransactionTool in components
     assert MemoryBridgeService in components
 
 
@@ -235,6 +243,7 @@ def test_adapter_rejects_wrong_target_or_unknown_partner() -> None:
 
 
 def test_adapter_accepts_allowed_partner_and_returns_message_envelope() -> None:
+    store.reset_state()
     adapter = build_adapter()
     envelope = __import__("asyncio").run(
         adapter.from_platform_message(
@@ -248,6 +257,7 @@ def test_adapter_accepts_allowed_partner_and_returns_message_envelope() -> None:
                 "expect_reply": True,
                 "reply_budget": 3,
                 "terminal": False,
+                "allowed_responders": ["223123"],
                 "hop": 0,
                 "ttl": 4,
                 "message_id": "m-ok",
@@ -263,6 +273,47 @@ def test_adapter_accepts_allowed_partner_and_returns_message_envelope() -> None:
     message_info = envelope.get("message_info") or {}
     user_info = message_info.get("user_info") if isinstance(message_info, dict) else {}
     assert user_info.get("user_id") == "114514"
+    extra = message_info.get("extra") if isinstance(message_info, dict) else {}
+    relay_context = extra.get("relay_context") if isinstance(extra, dict) else {}
+    assert relay_context.get("allowed_responders") == ["223123"]
+    assert relay_context.get("peer_bot_id") == "114514"
+    session = store.SESSION_TABLE["c-ok"]
+    assert session.peer_bot_id == "114514"
+    assert session.state == "pending_reply"
+    assert session.allowed_responders == ["223123"]
+
+
+def test_adapter_persists_inbound_invite_session() -> None:
+    store.reset_state()
+    adapter = build_adapter()
+    envelope = __import__("asyncio").run(
+        adapter.from_platform_message(
+            {
+                "from_bot": "114514",
+                "from_bot_name": "流光",
+                "to_bot": "223123",
+                "to_bot_name": "清风",
+                "channel": "transaction",
+                "intent": "invite",
+                "expect_reply": True,
+                "reply_budget": 2,
+                "terminal": False,
+                "allowed_responders": ["223123"],
+                "hop": 0,
+                "ttl": 4,
+                "message_id": "m-invite",
+                "conversation_id": "c-invite",
+                "trace_id": "t-invite",
+                "payload": {"text": "一起处理这个任务吗？"},
+            }
+        )
+    )
+    assert envelope is not None
+    session = store.SESSION_TABLE["c-invite"]
+    assert session.intent == "invite"
+    assert session.state == "pending_reply"
+    assert session.peer_bot_id == "114514"
+    assert session.allowed_responders == ["223123"]
 
 
 def test_adapter_increments_hop_on_inbound() -> None:
@@ -451,12 +502,14 @@ def test_bot_relay_context_summary_contains_relay_fields() -> None:
             "expect_reply": True,
             "reply_budget": 3,
             "terminal": False,
+            "allowed_responders": ["223123"],
         }
     )
     assert "对端 bot：流光（id=114514）" in extra
     assert "channel：transaction" in extra
     assert "intent：request" in extra
     assert "reply_budget：3" in extra
+    assert "allowed_responders：['223123']" in extra
 
 
 def test_bot_relay_context_summary_warns_when_no_reply_expected() -> None:
@@ -475,9 +528,12 @@ def test_bot_relay_context_summary_warns_when_no_reply_expected() -> None:
 
 
 def test_bot_relay_chatter_waits_when_context_does_not_expect_reply() -> None:
-    assert BotRelayChatter._should_respond({"expect_reply": False}) is False
-    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": True}) is False
-    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": False}) is True
+    assert BotRelayChatter._should_respond({"expect_reply": False}, "223123") is False
+    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": True}, "223123") is False
+    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": False}, "223123") is False
+    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": False, "allowed_responders": []}, "223123") is False
+    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": False, "allowed_responders": ["114514"]}, "223123") is False
+    assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": False, "allowed_responders": ["223123"]}, "223123") is True
     assert isinstance(Wait(), Wait)
 
 
@@ -774,13 +830,16 @@ def test_loop_guard_received_dedup_and_sent_boundary() -> None:
     # Correct adapter with relay_context -- should PASS
     good_params = {
         "message": type("M", (), {"platform": "bot_relay", "extra": {"relay_context": {"intent": "notify"}}})(),
-        "envelope": None,
+        "envelope": {"message_info": {}},
         "adapter_signature": "bot_private_relay:adapter:bot_relay",
     }
     good_keys = set(good_params.keys())
     decision4, good_out = handler._handle_sent(good_params)
     assert str(decision4) == "EventDecision.SUCCESS"
     assert set(good_out.keys()) == good_keys
+    envelope_extra = good_out["envelope"]["message_info"]["extra"]
+    assert envelope_extra["relay_context"] == {"intent": "notify"}
+    assert envelope_extra["bot_internal"] is True
 
 
 # ── Command ───────────────────────────────────────────────────────────
@@ -796,9 +855,46 @@ def test_command_status() -> None:
 # ── Transaction tools ─────────────────────────────────────────────────
 
 def test_transaction_tools_are_isolated_to_bot_relay_chatter() -> None:
+    assert AcceptTransactionTool.chatter_allow == ["bot_relay_chatter"]
     assert ConfirmTransactionTool.chatter_allow == ["bot_relay_chatter"]
     assert DeclineTransactionTool.chatter_allow == ["bot_relay_chatter"]
     assert CancelTransactionTool.chatter_allow == ["bot_relay_chatter"]
+
+
+def test_accept_tool_moves_pending_reply_to_accepted() -> None:
+    """accept is the explicit first transaction step after request/invite."""
+
+    store.reset_state()
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-accept",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="request",
+            state="pending_reply",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=3,
+            allowed_responders=["114514"],
+        )
+    )
+    plugin = BotPrivateRelayPlugin(build_config())
+    success, payload = __import__("asyncio").run(
+        AcceptTransactionTool(plugin).execute(
+            conversation_id="conv-accept",
+            caller_bot="114514",
+            reason="接下任务",
+        )
+    )
+    assert success is True
+    assert payload["status"] == "ok"
+    assert payload["intent"] == "accept"
+    session = store.SESSION_TABLE["conv-accept"]
+    assert session.intent == "accept"
+    assert session.state == "accepted"
+    assert session.terminal is False
+    assert session.expect_reply is True
+    assert session.reply_budget == 2
 
 
 def test_confirm_tool_requires_accepted_state() -> None:
@@ -838,8 +934,10 @@ def test_confirm_tool_requires_accepted_state() -> None:
     )
     assert success is True
     assert payload["status"] == "ok"
-    assert store.SESSION_TABLE["conv-001"].state == "confirmed"
+    assert store.SESSION_TABLE["conv-001"].state == "closed"
     assert store.SESSION_TABLE["conv-001"].terminal is True
+    assert store.SESSION_TABLE["conv-001"].reply_budget == 0
+    assert store.TRANSACTION_LOG["conv-001"].current_state == "closed"
     assert store.TRANSACTION_LOG["conv-001"].final_intent == "confirm"
     assert store.RELAY_TODOS
 
@@ -915,15 +1013,51 @@ def test_validate_transaction_action_error_codes_match_plan_enum() -> None:
     assert code in allowed_codes
 
 
-def test_outbound_envelope_can_infer_confirm_from_session_state() -> None:
+def test_outbound_envelope_can_infer_accept_from_session_state() -> None:
     store.reset_state()
     store.save_session(
         store.RelaySession(
             conversation_id="conv-002",
             peer_bot_id="114514",
             channel="transaction",
-            intent="request",
-            state="confirmed",
+            intent="accept",
+            state="accepted",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=2,
+            allowed_responders=["114514"],
+        )
+    )
+    envelope = SessionManager().build_outbound_envelope(
+        message_envelope={
+            "message_info": {
+                "platform": "bot_relay",
+                "user_info": {"user_id": "114514", "user_nickname": "流光"},
+                "extra": {"relay_context": {"conversation_id": "conv-002", "peer_bot_id": "114514"}},
+            },
+            "message_segment": [{"type": "text", "data": "没问题，我来整理"}],
+        },
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+    )
+    assert envelope.intent == "accept"
+    assert envelope.conversation_id == "conv-002"
+    assert envelope.state == "accepted"
+    assert envelope.terminal is False
+    assert envelope.expect_reply is True
+
+
+def test_outbound_envelope_can_infer_confirm_from_closed_session_intent() -> None:
+    store.reset_state()
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-003",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="confirm",
+            state="closed",
             terminal=True,
             expect_reply=False,
             reply_budget=0,
@@ -935,9 +1069,9 @@ def test_outbound_envelope_can_infer_confirm_from_session_state() -> None:
             "message_info": {
                 "platform": "bot_relay",
                 "user_info": {"user_id": "114514", "user_nickname": "流光"},
-                "extra": {},
+                "extra": {"relay_context": {"conversation_id": "conv-003", "peer_bot_id": "114514"}},
             },
-            "message_segment": [{"type": "text", "data": "没问题，我来整理"}],
+            "message_segment": [{"type": "text", "data": "确认完成"}],
         },
         from_bot="223123",
         from_bot_name="清风",
@@ -945,8 +1079,66 @@ def test_outbound_envelope_can_infer_confirm_from_session_state() -> None:
         to_bot_name="流光",
     )
     assert envelope.intent == "confirm"
+    assert envelope.conversation_id == "conv-003"
+    assert envelope.state == "closed"
     assert envelope.terminal is True
     assert envelope.expect_reply is False
+
+
+def test_relay_send_text_context_preserves_conversation_without_inbound_intent() -> None:
+    store.reset_state()
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-action",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="accept",
+            state="accepted",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=2,
+            allowed_responders=["114514"],
+        )
+    )
+    message = type(
+        "Msg",
+        (),
+        {
+            "extra": {
+                "relay_context": {
+                    "conversation_id": "conv-action",
+                    "intent": "request",
+                    "peer_bot_name": "流光",
+                }
+            }
+        },
+    )()
+    context = type(
+        "Context",
+        (),
+        {
+            "unread_messages": [message],
+            "history_messages": [],
+            "current_message": None,
+            "message_cache": [],
+            "triggering_user_id": "",
+        },
+    )()
+    stream = type(
+        "Stream",
+        (),
+        {
+            "context": context,
+            "stream_id": "s1",
+            "platform": "bot_relay",
+            "chat_type": "private",
+        },
+    )()
+    action = BotRelaySendTextAction(chat_stream=stream, plugin=BotPrivateRelayPlugin(build_config()))
+    relay_context = action._relay_context_for_send(message)
+    assert relay_context["conversation_id"] == "conv-action"
+    assert "intent" not in relay_context
+    assert relay_context["state"] == "accepted"
 
 
 # ── Social session state machine (Phase 3) ────────────────────────────
@@ -1103,8 +1295,11 @@ def test_social_session_and_memory_candidate_projection() -> None:
     )
     session = manager.save_social_session_from_envelope(social)
     assert session.channel == "social"
+    assert session.peer_bot_id == "114514"
     manager.maybe_create_memory_candidate(envelope=social)
     assert store.RELAY_MEMORY_CANDIDATES
+    candidate = next(iter(store.RELAY_MEMORY_CANDIDATES.values()))
+    assert candidate.peer_bot_id == "114514"
 
 
 # ── MQTT reconnect & smoke-test script ───────────────────────────────

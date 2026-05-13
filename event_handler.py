@@ -64,4 +64,12 @@ class LoopGuardEventHandler(BaseEventHandler):
         relay_context = message.extra.get("relay_context", {}) if hasattr(message, "extra") else {}
         if not isinstance(relay_context, dict):
             return EventDecision.STOP, params
+        envelope = params.get("envelope")
+        if isinstance(envelope, dict):
+            message_info = envelope.setdefault("message_info", {})
+            if isinstance(message_info, dict):
+                extra = message_info.setdefault("extra", {})
+                if isinstance(extra, dict):
+                    extra["relay_context"] = relay_context
+                    extra["bot_internal"] = True
         return EventDecision.SUCCESS, params

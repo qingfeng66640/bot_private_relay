@@ -24,9 +24,8 @@ class SessionManager:
             "close": "closed",
             "cancel": "closed",
         },
-        "accepted": {"confirm": "confirmed", "decline": "closed", "cancel": "closed"},
+        "accepted": {"confirm": "closed", "decline": "closed", "cancel": "closed"},
         "reschedule_requested": {"accept": "accepted", "decline": "closed", "close": "closed", "cancel": "closed"},
-        "confirmed": {"close": "closed"},
         "closed": {},
     }
     _SOCIAL_END_PHASES = {"ending", "closed"}
@@ -48,17 +47,19 @@ class SessionManager:
         extra = _extract_extra(message_envelope)
         relay_context = extra.get("relay_context") if isinstance(extra, dict) else None
         context = relay_context if isinstance(relay_context, dict) else {}
-        explicit_intent = context.get("intent")
         inferred_session = self._find_session_for_outbound(context=context, message_envelope=message_envelope, to_bot=to_bot)
-        intent = str(explicit_intent or self._infer_intent_from_session(inferred_session) or "notify")
+        explicit_intent = context.get("intent")
+        inferred_intent = self._infer_intent_from_session(inferred_session)
+        intent = str(inferred_intent or explicit_intent or "notify")
         channel = str(context.get("channel") or "transaction")
         conversation_id = str(context.get("conversation_id") or (inferred_session.conversation_id if inferred_session else ""))
-        reply_budget = default_reply_budget if intent == "request" else 0
-        allowed_responders = [to_bot] if intent == "request" else []
+        expects_initial_reply = intent in {"request", "invite"}
+        reply_budget = default_reply_budget if expects_initial_reply else 0
+        allowed_responders = [to_bot] if expects_initial_reply else []
         terminal = intent == "notify"
-        expect_reply = intent == "request"
-        state = "pending_reply" if intent == "request" else "closed"
-        if inferred_session is not None and not explicit_intent:
+        expect_reply = expects_initial_reply
+        state = "pending_reply" if expects_initial_reply else "closed"
+        if inferred_session is not None and inferred_intent:
             reply_budget = inferred_session.reply_budget
             allowed_responders = list(inferred_session.allowed_responders)
             state = inferred_session.state or state
@@ -81,11 +82,11 @@ class SessionManager:
             state=state,
         )
         if inferred_session is None:
-            envelope.state = "pending_reply" if intent == "request" else envelope.state
-            envelope.expect_reply = intent == "request"
+            envelope.state = "pending_reply" if expects_initial_reply else envelope.state
+            envelope.expect_reply = expects_initial_reply
             envelope.terminal = intent == "notify"
-            envelope.reply_budget = default_reply_budget if intent == "request" else envelope.reply_budget
-            envelope.allowed_responders = [to_bot] if intent == "request" else envelope.allowed_responders
+            envelope.reply_budget = default_reply_budget if expects_initial_reply else envelope.reply_budget
+            envelope.allowed_responders = [to_bot] if expects_initial_reply else envelope.allowed_responders
         store.save_session(
             store.RelaySession(
                 conversation_id=envelope.conversation_id,
@@ -128,7 +129,48 @@ class SessionManager:
             "terminal": envelope.terminal,
             "expect_reply": envelope.expect_reply,
             "reply_budget": envelope.reply_budget,
+            "allowed_responders": list(envelope.allowed_responders),
         }
+
+    def sync_inbound_transaction_session(self, envelope: RelayEnvelope) -> store.RelaySession | None:
+        """Persist inbound transaction state from a validated relay envelope."""
+
+        if envelope.channel != "transaction":
+            return None
+        if envelope.intent not in self._transaction_intents():
+            return None
+
+        existing = store.get_session(envelope.conversation_id)
+        state = envelope.state or self._state_for_inbound_intent(envelope.intent, existing)
+        terminal = envelope.terminal or state == "closed" or envelope.intent in {"notify", "confirm", "decline", "cancel", "ack", "close"}
+        expect_reply = False if terminal else envelope.expect_reply
+        reply_budget = 0 if terminal else envelope.reply_budget
+        session = store.RelaySession(
+            conversation_id=envelope.conversation_id,
+            peer_bot_id=envelope.from_bot,
+            channel=envelope.channel,
+            intent=envelope.intent,
+            state=state,
+            terminal=terminal,
+            expect_reply=expect_reply,
+            reply_budget=reply_budget,
+            allowed_responders=list(envelope.allowed_responders),
+            phase=envelope.phase,
+        )
+        store.save_session(session)
+        store.save_transaction_record(
+            store.RelayTransactionRecord(
+                conversation_id=envelope.conversation_id,
+                trace_id=envelope.trace_id,
+                from_bot=envelope.from_bot,
+                to_bot=envelope.to_bot,
+                current_state=state or "",
+                final_intent=envelope.intent if terminal else None,
+                topic=envelope.text,
+                summary=envelope.text,
+            )
+        )
+        return session
 
     def build_social_envelope(
         self,
@@ -274,10 +316,12 @@ class SessionManager:
             raise ValueError("conversation_not_found")
         current_state = session.state or "created"
         next_state = self._TRANSITIONS[current_state][action]
+        terminal = next_state == "closed" or action in {"confirm", "decline", "cancel", "ack", "close"}
         session.state = next_state
-        session.reply_budget = max(0, session.reply_budget - 1)
-        session.expect_reply = False if next_state in {"confirmed", "closed"} or action in {"confirm", "decline", "cancel", "ack", "close"} else session.expect_reply
-        session.terminal = action in {"confirm", "decline", "cancel", "ack", "close"}
+        session.intent = action
+        session.reply_budget = 0 if terminal else max(0, session.reply_budget - 1)
+        session.expect_reply = False if terminal else session.expect_reply
+        session.terminal = terminal
         store.save_session(session)
         record = store.TRANSACTION_LOG.get(conversation_id)
         if record is not None:
@@ -312,15 +356,33 @@ class SessionManager:
         if session is None:
             return None
         state = session.state or ""
-        if state == "confirmed":
-            return "confirm"
         if state == "accepted":
             return "accept"
         if state == "reschedule_requested":
             return "reschedule"
         if state == "closed":
+            if session.intent in {"notify", "confirm", "decline", "cancel", "ack", "close"}:
+                return session.intent
             return "close"
         return None
+
+    @classmethod
+    def _transaction_intents(cls) -> set[str]:
+        """Return known transaction intents from the transition table."""
+
+        intents = set(cls._TRANSITIONS["created"])
+        for transitions in cls._TRANSITIONS.values():
+            intents.update(transitions)
+        return intents
+
+    def _state_for_inbound_intent(self, intent: str, existing: store.RelaySession | None) -> str:
+        """Infer inbound state when the envelope did not carry one."""
+
+        current = existing.state if existing is not None and existing.state else "created"
+        next_state = self._TRANSITIONS.get(current, {}).get(intent)
+        if next_state is not None:
+            return next_state
+        return self._TRANSITIONS["created"].get(intent, existing.state if existing is not None else "closed")
 
     # ── Phase 3 social session state machine ──────────────────────────
 

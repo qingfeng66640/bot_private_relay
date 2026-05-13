@@ -45,7 +45,7 @@ class BotRelayChatter(BaseChatter):
 3. 当 relay_context.expect_reply=false 时，不要强行回复，不要没话找话。
 4. transaction.notify 是单向通知；transaction.request 才表示对端期待你协作或回应。
 5. 若当前消息属于事务上下文，请优先遵守事务状态、意图、预算和终态约束。
-6. 调用 confirm_transaction / decline_transaction / cancel_transaction 时，caller_bot 必须填写本机 bot_id。
+6. 调用 accept_transaction / confirm_transaction / decline_transaction / cancel_transaction 时，caller_bot 必须填写本机 bot_id。
 7. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
 """.strip()
 
@@ -75,7 +75,7 @@ class BotRelayChatter(BaseChatter):
             return
 
         relay_context = self._latest_relay_context(chat_stream)
-        if not self._should_respond(relay_context):
+        if not self._should_respond(relay_context, self.relay_config.relay.bot_id):
             await self.flush_unreads(unread_messages)
             yield Wait()
             return
@@ -304,14 +304,19 @@ class BotRelayChatter(BaseChatter):
         )
 
     @classmethod
-    def _should_respond(cls, relay_context: dict[str, Any]) -> bool:
+    def _should_respond(cls, relay_context: dict[str, Any], local_bot_id: str = "") -> bool:
         """Return whether the latest relay context expects an automatic response."""
 
         if not relay_context:
             return False
         if relay_context.get("terminal") is True:
             return False
-        return relay_context.get("expect_reply") is True
+        if relay_context.get("expect_reply") is not True:
+            return False
+        allowed_responders = relay_context.get("allowed_responders")
+        if not isinstance(allowed_responders, list):
+            return False
+        return local_bot_id in allowed_responders
 
     @classmethod
     def _format_relay_context(cls, relay_context: dict[str, Any]) -> str:
@@ -332,6 +337,7 @@ class BotRelayChatter(BaseChatter):
         expect_reply = bool(relay_context.get("expect_reply", False))
         reply_budget = int(relay_context.get("reply_budget", 0) or 0)
         terminal = bool(relay_context.get("terminal", False))
+        allowed_responders = relay_context.get("allowed_responders", [])
 
         lines = [
             f"- 对端 bot：{peer_name}（id={peer_id}）",
@@ -340,6 +346,7 @@ class BotRelayChatter(BaseChatter):
             f"- expect_reply：{str(expect_reply).lower()}",
             f"- reply_budget：{reply_budget}",
             f"- terminal：{str(terminal).lower()}",
+            f"- allowed_responders：{allowed_responders}",
         ]
         if state:
             lines.append(f"- state：{state}")
