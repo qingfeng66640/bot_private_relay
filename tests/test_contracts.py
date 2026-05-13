@@ -160,6 +160,7 @@ def test_policy_notify_is_one_way() -> None:
 # ── Session manager ───────────────────────────────────────────────────
 
 def test_session_manager_builds_request() -> None:
+    store.reset_state()
     manager = SessionManager()
     envelope = manager.build_outbound_envelope(
         message_envelope={
