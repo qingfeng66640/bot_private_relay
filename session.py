@@ -47,11 +47,32 @@ class SessionManager:
         extra = _extract_extra(message_envelope)
         relay_context = extra.get("relay_context") if isinstance(extra, dict) else None
         context = relay_context if isinstance(relay_context, dict) else {}
+        channel = str(context.get("channel") or "transaction")
+        if channel == "social":
+            envelope = self.build_social_envelope(
+                from_bot=from_bot,
+                from_bot_name=from_bot_name,
+                to_bot=to_bot,
+                to_bot_name=to_bot_name,
+                text=text,
+                phase=str(context.get("phase") or "opening"),
+                reply_budget=_context_int(context, "reply_budget", default_reply_budget),
+                cooldown_seconds=_context_int(context, "cooldown_seconds", 0),
+                max_turns=_context_int(context, "max_turns", 6),
+            )
+            envelope.ttl = default_ttl
+            conversation_id = context.get("conversation_id")
+            if isinstance(conversation_id, str) and conversation_id:
+                envelope.conversation_id = conversation_id
+            trace_id = context.get("trace_id")
+            if isinstance(trace_id, str) and trace_id:
+                envelope.trace_id = trace_id
+            self.save_social_session_from_envelope(envelope)
+            return envelope
         inferred_session = self._find_session_for_outbound(context=context, message_envelope=message_envelope, to_bot=to_bot)
         explicit_intent = context.get("intent")
         inferred_intent = self._infer_intent_from_session(inferred_session)
         intent = str(inferred_intent or explicit_intent or "notify")
-        channel = str(context.get("channel") or "transaction")
         conversation_id = str(context.get("conversation_id") or (inferred_session.conversation_id if inferred_session else ""))
         expects_initial_reply = intent in {"request", "invite"}
         reply_budget = default_reply_budget if expects_initial_reply else 0
@@ -222,6 +243,8 @@ class SessionManager:
             expect_reply=phase not in ("ending", "closed"),
             state=None,
         )
+        if existing is not None:
+            envelope.conversation_id = existing.conversation_id
         return self.apply_expect_reply_overrides(envelope)
 
     def _find_social_session(self, peer_bot_id: str) -> store.RelaySession | None:
@@ -253,6 +276,7 @@ class SessionManager:
     def save_social_session_from_envelope(self, envelope: RelayEnvelope) -> store.RelaySession:
         """Persist minimal social-session state into the shared store."""
 
+        existing = store.get_session(envelope.conversation_id)
         session = store.RelaySession(
             conversation_id=envelope.conversation_id,
             peer_bot_id=envelope.to_bot,
@@ -263,6 +287,11 @@ class SessionManager:
             expect_reply=envelope.expect_reply,
             reply_budget=envelope.reply_budget,
             allowed_responders=list(envelope.allowed_responders),
+            phase=envelope.phase,
+            turn_count=existing.turn_count if existing is not None else 0,
+            max_turns=existing.max_turns if existing is not None else 6,
+            cooldown_seconds=envelope.cooldown_seconds,
+            cooldown_until=existing.cooldown_until if existing is not None else 0.0,
         )
         store.save_session(session)
         return session
@@ -469,3 +498,14 @@ def _extract_extra(message_envelope: MessageEnvelope) -> dict[str, object]:
     message_info = message_envelope.get("message_info") or {}
     extra = message_info.get("extra") if isinstance(message_info, dict) else None
     return extra if isinstance(extra, dict) else {}
+
+
+def _context_int(context: dict[str, object], key: str, default: int) -> int:
+    """Return a non-negative integer from relay context."""
+
+    value = context.get(key)
+    try:
+        parsed = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default

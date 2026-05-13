@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 from pathlib import Path
+from typing import Any
 from mofox_wire import MessageEnvelope
 from plugins.default_chatter.plugin import DefaultChatter
 
+from plugins.bot_private_relay import command as relay_command_module
 from plugins.bot_private_relay.adapter import BotRelayAdapter
 from plugins.bot_private_relay.command import RelayCommand
 from plugins.bot_private_relay.chatter import BotRelayChatter
@@ -42,6 +45,19 @@ class DummySink:
 
     async def send(self, envelope: MessageEnvelope) -> None:
         self.captured.append(envelope)
+
+
+class RecordingMessageSender:
+    """MessageSender test double recording outbound send calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, str | None]] = []
+
+    async def send_message(self, message: Any, adapter_signature: str | None = None) -> bool:
+        """Record the outgoing message and report success."""
+
+        self.calls.append((message, adapter_signature))
+        return True
 
 
 def build_adapter() -> BotRelayAdapter:
@@ -178,6 +194,38 @@ def test_session_manager_builds_request() -> None:
     assert envelope.intent == "request"
     assert envelope.expect_reply is True
     assert envelope.allowed_responders == ["114514"]
+
+
+def test_session_manager_builds_social_say_with_reply_controls() -> None:
+    store.reset_state()
+    manager = SessionManager()
+    envelope = manager.build_outbound_envelope(
+        message_envelope={
+            "message_info": {
+                "platform": "bot_relay",
+                "extra": {
+                    "relay_context": {
+                        "intent": "say",
+                        "channel": "social",
+                        "phase": "opening",
+                        "reply_budget": 2,
+                    }
+                },
+            },
+            "message_segment": [{"type": "text", "data": "我们聊一下协作节奏。"}],
+        },
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+    )
+    assert envelope.channel == "social"
+    assert envelope.intent == "say"
+    assert envelope.phase == "active"
+    assert envelope.expect_reply is True
+    assert envelope.reply_budget == 2
+    assert envelope.allowed_responders == ["114514"]
+    assert store.SESSION_TABLE[envelope.conversation_id].phase == "active"
 
 
 # ── Presence & system handler ─────────────────────────────────────────
@@ -851,6 +899,70 @@ def test_command_status() -> None:
     success, text = __import__("asyncio").run(command.status())
     assert success is True
     assert "relay status:" in text
+
+
+def test_command_request_sends_transaction_to_default_partner() -> None:
+    plugin = BotPrivateRelayPlugin(build_config())
+    command = RelayCommand(plugin=plugin, stream_id="s1")
+    sender = RecordingMessageSender()
+    original = relay_command_module.get_message_sender
+    relay_command_module.get_message_sender = lambda: sender
+    try:
+        success, text = asyncio.run(command.execute("request 请帮我整理会议纪要"))
+    finally:
+        relay_command_module.get_message_sender = original
+
+    assert success is True
+    assert "relay request sent" in text
+    message, adapter_signature = sender.calls[0]
+    assert adapter_signature == "bot_private_relay:adapter:bot_relay"
+    assert message.platform == "bot_relay"
+    assert message.chat_type == "private"
+    assert message.stream_id == ""
+    assert message.content == "请帮我整理会议纪要"
+    relay_context = message.extra["relay_context"]
+    assert relay_context["channel"] == "transaction"
+    assert relay_context["intent"] == "request"
+    assert relay_context["peer_bot_id"] == "114514"
+
+
+def test_command_social_sends_to_explicit_partner() -> None:
+    plugin = BotPrivateRelayPlugin(build_config())
+    command = RelayCommand(plugin=plugin, stream_id="s1")
+    sender = RecordingMessageSender()
+    original = relay_command_module.get_message_sender
+    relay_command_module.get_message_sender = lambda: sender
+    try:
+        success, text = asyncio.run(command.execute("social to 114514 我们聊一下协作节奏"))
+    finally:
+        relay_command_module.get_message_sender = original
+
+    assert success is True
+    assert "relay say sent" in text
+    message, adapter_signature = sender.calls[0]
+    assert adapter_signature == "bot_private_relay:adapter:bot_relay"
+    assert message.content == "我们聊一下协作节奏"
+    relay_context = message.extra["relay_context"]
+    assert relay_context["channel"] == "social"
+    assert relay_context["intent"] == "say"
+    assert relay_context["peer_bot_id"] == "114514"
+    assert relay_context["allowed_responders"] == ["114514"]
+
+
+def test_command_rejects_unknown_explicit_partner() -> None:
+    plugin = BotPrivateRelayPlugin(build_config())
+    command = RelayCommand(plugin=plugin, stream_id="s1")
+    sender = RecordingMessageSender()
+    original = relay_command_module.get_message_sender
+    relay_command_module.get_message_sender = lambda: sender
+    try:
+        success, text = asyncio.run(command.execute("request to unknown 请帮忙"))
+    finally:
+        relay_command_module.get_message_sender = original
+
+    assert success is False
+    assert "unknown partner" in text
+    assert sender.calls == []
 
 
 # ── Transaction tools ─────────────────────────────────────────────────
