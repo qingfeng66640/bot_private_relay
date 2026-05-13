@@ -35,6 +35,15 @@ class BotRelayChatter(BaseChatter):
     chatter_description = "Bot private relay chatter"
     associated_platforms = ["bot_relay"]
     chat_type = ChatType.PRIVATE
+    _RELAY_USABLE_SIGNATURES = {
+        "bot_private_relay:action:send_text",
+        "bot_private_relay:action:pass_and_wait",
+        "bot_private_relay:action:stop_conversation",
+        "bot_private_relay:tool:accept_transaction",
+        "bot_private_relay:tool:confirm_transaction",
+        "bot_private_relay:tool:decline_transaction",
+        "bot_private_relay:tool:cancel_transaction",
+    }
 
     _RELAY_SYSTEM_GUIDANCE = """
 你当前处理的是 bot 与 bot 之间的私有中继对话，而不是面对普通用户的公开聊天。
@@ -58,6 +67,20 @@ class BotRelayChatter(BaseChatter):
         if not self.plugin or not isinstance(self.plugin.config, BotPrivateRelayConfig):
             raise RuntimeError("Bot relay chatter requires BotPrivateRelayConfig")
         return self.plugin.config
+
+    async def get_llm_usables(self) -> list[type[Any]]:
+        """Return only relay-owned LLM usables for the relay chatter."""
+
+        usables = await super().get_llm_usables()
+        return [usable for usable in usables if self._is_relay_usable(usable)]
+
+    @classmethod
+    def _is_relay_usable(cls, usable_cls: type[Any]) -> bool:
+        """Return whether a usable belongs to the relay callable surface."""
+
+        get_signature = getattr(usable_cls, "get_signature", None)
+        signature = get_signature() if callable(get_signature) else ""
+        return isinstance(signature, str) and signature in cls._RELAY_USABLE_SIGNATURES
 
     async def execute(
         self,
@@ -206,8 +229,8 @@ class BotRelayChatter(BaseChatter):
             )
             return Success("bot_relay_chatter completed follow-up tool turn")
 
-        if follow_text and trigger_message is not None:
-            return await self._send_plain_text_response(follow_text, trigger_message)
+        if follow_text:
+            logger.info("BotRelayChatter suppressed bare follow-up text after tool calls")
 
         logger.info("BotRelayChatter follow-up produced no text and no tool calls")
         return Success("bot_relay_chatter completed relay tool turn without follow-up text")

@@ -17,7 +17,7 @@ class LoopGuardEventHandler(BaseEventHandler):
 
     handler_name = "loop_guard"
     handler_description = "Loop guard for bot private relay"
-    weight = 100
+    weight = 200
     intercept_message = True
     init_subscribe = [EventType.ON_MESSAGE_RECEIVED, EventType.ON_MESSAGE_SENT]
 
@@ -60,9 +60,11 @@ class LoopGuardEventHandler(BaseEventHandler):
         if message.platform != "bot_relay":
             return EventDecision.PASS, params
         if adapter_signature != "bot_private_relay:adapter:bot_relay":
+            self._set_continue_send(params, False)
             return EventDecision.STOP, params
         relay_context = message.extra.get("relay_context", {}) if hasattr(message, "extra") else {}
         if not isinstance(relay_context, dict):
+            self._set_continue_send(params, False)
             return EventDecision.STOP, params
         envelope = params.get("envelope")
         if isinstance(envelope, dict):
@@ -72,4 +74,12 @@ class LoopGuardEventHandler(BaseEventHandler):
                 if isinstance(extra, dict):
                     extra["relay_context"] = relay_context
                     extra["bot_internal"] = True
-        return EventDecision.SUCCESS, params
+        self._set_continue_send(params, True)
+        return EventDecision.STOP, params
+
+    @staticmethod
+    def _set_continue_send(params: dict[str, Any], value: bool) -> None:
+        """Update continue_send without changing the event param signature."""
+
+        if "continue_send" in params:
+            params["continue_send"] = value

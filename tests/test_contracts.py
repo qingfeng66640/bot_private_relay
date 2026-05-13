@@ -34,6 +34,7 @@ from plugins.bot_private_relay.session import SessionManager
 from plugins.bot_private_relay.system_handler import SystemChannelHandler
 from plugins.bot_private_relay import store
 from src.core.components.base import BaseChatter, Success, Wait
+from src.core.models.message import Message, MessageType
 
 
 class DummySink:
@@ -532,6 +533,27 @@ def test_relay_action_isolated_to_bot_relay_chatter() -> None:
     assert BotRelaySendTextAction.chatter_allow == ["bot_relay_chatter"]
 
 
+def test_bot_relay_chatter_blocks_non_relay_usables() -> None:
+    """Relay chatter must not expose unrelated global actions/tools."""
+
+    class RelayUsable:
+        @classmethod
+        def get_signature(cls) -> str:
+            return "bot_private_relay:action:send_text"
+
+    class ForeignUsable:
+        @classmethod
+        def get_signature(cls) -> str:
+            return "emoji_sticker:action:send_emoji"
+
+    class UnsignedUsable:
+        pass
+
+    assert BotRelayChatter._is_relay_usable(RelayUsable) is True
+    assert BotRelayChatter._is_relay_usable(ForeignUsable) is False
+    assert BotRelayChatter._is_relay_usable(UnsignedUsable) is False
+
+
 # ── Chatter ───────────────────────────────────────────────────────────
 
 def test_bot_relay_chatter_uses_base_chatter_not_default_chatter() -> None:
@@ -703,15 +725,18 @@ def test_bot_relay_chatter_falls_back_to_stream_when_non_stream_fails() -> None:
     assert request.stream_modes == [False, True]
 
 
-def test_bot_relay_chatter_follows_up_after_transaction_tool_call() -> None:
-    """Transaction tools should be followed by an outbound natural-language reply."""
+def test_bot_relay_chatter_runs_explicit_send_text_followup_after_transaction_tool_call() -> None:
+    """Transaction tools may be followed by an explicit relay send_text call."""
 
-    class FakeCall:
+    class TransactionCall:
         name = "tool-confirm_transaction"
 
+    class SendTextCall:
+        name = "action-send_text"
+
     class FollowResponse:
-        message = "确认了，我会处理。"
-        call_list = []
+        message = "已完成事务工具调用。"
+        call_list = [SendTextCall()]
 
         def __await__(self):
             async def _collect():
@@ -721,7 +746,7 @@ def test_bot_relay_chatter_follows_up_after_transaction_tool_call() -> None:
 
     class InitialResponse:
         message = ""
-        call_list = [FakeCall()]
+        call_list = [TransactionCall()]
 
         def __init__(self) -> None:
             self.followup_stream_modes = []
@@ -752,8 +777,8 @@ def test_bot_relay_chatter_follows_up_after_transaction_tool_call() -> None:
 
     plugin = BotPrivateRelayPlugin(build_config())
     chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
-    sent = {}
-    tool_calls = {}
+    sent: list[dict[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
     initial = InitialResponse()
     fake_request = FakeRequest(initial)
 
@@ -764,13 +789,11 @@ def test_bot_relay_chatter_follows_up_after_transaction_tool_call() -> None:
         return object()
 
     async def run_tool_call(calls, response, usable_map, trigger_msg):
-        tool_calls["calls"] = calls
-        tool_calls["trigger_msg"] = trigger_msg
+        tool_calls.append({"calls": calls, "trigger_msg": trigger_msg})
         return [(True, True)]
 
     async def exec_llm_usable(usable_cls, message, **kwargs):
-        sent["message"] = message
-        sent["kwargs"] = kwargs
+        sent.append({"message": message, "kwargs": kwargs})
         return True, {"status": "sent"}
 
     chatter.create_request = create_request  # type: ignore[method-assign]
@@ -819,9 +842,64 @@ def test_bot_relay_chatter_follows_up_after_transaction_tool_call() -> None:
     assert isinstance(result, Success)
     assert fake_request.stream_modes == [False]
     assert initial.followup_stream_modes == [False]
-    assert tool_calls["calls"] == initial.call_list
-    assert sent["message"] is unread
-    assert sent["kwargs"] == {"content": "确认了，我会处理。"}
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["calls"] == initial.call_list
+    assert [getattr(call, "name", "") for call in tool_calls[1]["calls"]] == ["action-send_text"]
+    assert tool_calls[1]["trigger_msg"] is unread
+    assert sent == []
+
+
+def test_bot_relay_chatter_suppresses_bare_followup_text_after_tool_call() -> None:
+    """Bare follow-up text after tool calls is internal status, not relay content."""
+
+    class FollowResponse:
+        message = "已发送回复，简洁确认收到测试信息。"
+        call_list = []
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+    class InitialResponse:
+        def __init__(self) -> None:
+            self.followup_stream_modes = []
+
+        async def send(self, auto_append_response=True, stream=True):
+            self.followup_stream_modes.append(stream)
+            return FollowResponse()
+
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    sent: list[dict[str, Any]] = []
+    response = InitialResponse()
+
+    async def exec_llm_usable(usable_cls, message, **kwargs):
+        sent.append({"message": message, "kwargs": kwargs})
+        return True, {"status": "sent"}
+
+    chatter.exec_llm_usable = exec_llm_usable  # type: ignore[method-assign]
+    trigger = type(
+        "Msg",
+        (),
+        {
+            "message_id": "m-followup",
+            "extra": {"relay_context": {"expect_reply": True}},
+        },
+    )()
+
+    result = __import__("asyncio").run(
+        chatter._run_followup_after_tools(
+            response=response,
+            tool_registry=object(),
+            trigger_message=trigger,
+        )
+    )
+
+    assert isinstance(result, Success)
+    assert response.followup_stream_modes == [False]
+    assert sent == []
 
 
 # ── LoopGuard ─────────────────────────────────────────────────────────
@@ -830,6 +908,7 @@ def test_loop_guard_received_dedup_and_sent_boundary() -> None:
     """LoopGuard preserves params keys on STOP -- no injection."""
     store.reset_state()
     handler = LoopGuardEventHandler(plugin=BotPrivateRelayPlugin(build_config()))
+    assert LoopGuardEventHandler.weight > 100
 
     params = {
         "message": type("M", (), {
@@ -857,35 +936,50 @@ def test_loop_guard_received_dedup_and_sent_boundary() -> None:
         "message": type("M", (), {"platform": "bot_relay", "extra": {"relay_context": {}}})(),
         "envelope": None,
         "adapter_signature": "wrong:adapter:anything",
+        "continue_send": True,
     }
     sent_keys = set(sent_params.keys())
     decision3, sent_out = handler._handle_sent(sent_params)
     assert str(decision3) == "EventDecision.STOP"
     assert set(sent_out.keys()) == sent_keys
+    assert sent_out["continue_send"] is False
 
-    # Missing relay_context with empty extra dict passes isinstance check
-    # (empty relay_context is valid at LoopGuard level — bot_relay message
-    # without relay context may be a system-level notification)
+    # Missing relay_context with empty extra dict still isolates bot_relay
+    # from later generic send handlers while allowing adapter delivery.
     bad_params = {
         "message": type("M", (), {"platform": "bot_relay", "extra": {}})(),
         "envelope": None,
         "adapter_signature": "bot_private_relay:adapter:bot_relay",
+        "continue_send": True,
     }
     bad_keys = set(bad_params.keys())
     decision5, bad_out = handler._handle_sent(bad_params)
-    assert str(decision5) == "EventDecision.SUCCESS"
+    assert str(decision5) == "EventDecision.STOP"
     assert set(bad_out.keys()) == bad_keys
+    assert bad_out["continue_send"] is True
 
-    # Correct adapter with relay_context -- should PASS
+    malformed_params = {
+        "message": type("M", (), {"platform": "bot_relay", "extra": {"relay_context": []}})(),
+        "envelope": None,
+        "adapter_signature": "bot_private_relay:adapter:bot_relay",
+        "continue_send": True,
+    }
+    decision6, malformed_out = handler._handle_sent(malformed_params)
+    assert str(decision6) == "EventDecision.STOP"
+    assert malformed_out["continue_send"] is False
+
+    # Correct adapter with relay_context stops later handlers but still sends.
     good_params = {
         "message": type("M", (), {"platform": "bot_relay", "extra": {"relay_context": {"intent": "notify"}}})(),
         "envelope": {"message_info": {}},
         "adapter_signature": "bot_private_relay:adapter:bot_relay",
+        "continue_send": True,
     }
     good_keys = set(good_params.keys())
     decision4, good_out = handler._handle_sent(good_params)
-    assert str(decision4) == "EventDecision.SUCCESS"
+    assert str(decision4) == "EventDecision.STOP"
     assert set(good_out.keys()) == good_keys
+    assert good_out["continue_send"] is True
     envelope_extra = good_out["envelope"]["message_info"]["extra"]
     assert envelope_extra["relay_context"] == {"intent": "notify"}
     assert envelope_extra["bot_internal"] is True
@@ -899,6 +993,49 @@ def test_command_status() -> None:
     success, text = __import__("asyncio").run(command.status())
     assert success is True
     assert "relay status:" in text
+
+
+def test_command_status_replies_to_original_platform_message() -> None:
+    plugin = BotPrivateRelayPlugin(build_config())
+    sender = RecordingMessageSender()
+    incoming_message = Message(
+        message_id="msg-status",
+        content="/relay status",
+        processed_plain_text="/relay status",
+        message_type=MessageType.TEXT,
+        sender_id="user-001",
+        sender_name="Alice",
+        platform="qq",
+        chat_type="group",
+        stream_id="group-stream-001",
+        group_id="group-123",
+        group_name="Relay Group",
+    )
+    command = RelayCommand(
+        plugin=plugin,
+        stream_id="group-stream-001",
+        message_id="msg-status",
+        message=incoming_message,
+    )
+    original = relay_command_module.get_message_sender
+    relay_command_module.get_message_sender = lambda: sender
+    try:
+        success, text = asyncio.run(command.execute("status"))
+    finally:
+        relay_command_module.get_message_sender = original
+
+    assert success is True
+    assert "relay status:" in text
+    assert len(sender.calls) == 1
+    reply_message, adapter_signature = sender.calls[0]
+    assert adapter_signature is None
+    assert reply_message.platform == "qq"
+    assert reply_message.chat_type == "group"
+    assert reply_message.stream_id == "group-stream-001"
+    assert "relay status:" in reply_message.content
+    assert "relay status:" in reply_message.processed_plain_text
+    assert reply_message.extra["group_id"] == "group-123"
+    assert reply_message.extra["group_name"] == "Relay Group"
 
 
 def test_command_request_sends_transaction_to_default_partner() -> None:
@@ -1269,7 +1406,7 @@ def test_social_phase_advances_on_turns() -> None:
         turn_count=0,
         max_turns=6,
         allowed_responders=["114514"],
-        reply_budget=3,
+        reply_budget=10,
     )
     store.save_session(session)
 
@@ -1312,6 +1449,93 @@ def test_social_cooldown_active_while_timer_running() -> None:
 
     session.cooldown_until = time.time() - 1
     assert manager.is_social_in_cooldown(session) is False
+
+
+def test_social_turn_consumes_reply_budget_and_closes_at_zero() -> None:
+    """Social reply budget must only decrease and suppress auto-reply at zero."""
+    store.reset_state()
+    manager = SessionManager()
+    session = store.RelaySession(
+        conversation_id="social-budget",
+        peer_bot_id="114514",
+        channel="social",
+        intent="say",
+        phase="active",
+        turn_count=0,
+        max_turns=6,
+        terminal=False,
+        expect_reply=True,
+        reply_budget=2,
+        allowed_responders=["114514"],
+    )
+    store.save_session(session)
+
+    first = manager.advance_social_turn(session=session, max_turns=6)
+    assert first.reply_budget == 1
+    assert first.expect_reply is True
+    assert first.terminal is False
+    assert first.allowed_responders == ["114514"]
+
+    second = manager.advance_social_turn(session=first, max_turns=6)
+    assert second.reply_budget == 0
+    assert second.phase == "ending"
+    assert second.expect_reply is False
+    assert second.terminal is True
+    assert second.allowed_responders == []
+
+
+def test_inbound_social_session_is_synced_for_outbound_budget_control() -> None:
+    """Inbound social envelopes must seed local session state before replies."""
+    store.reset_state()
+    manager = SessionManager()
+    session = manager.sync_inbound_social_session(
+        RelayEnvelope(
+            conversation_id="social-inbound",
+            trace_id="trace-inbound",
+            from_bot="114514",
+            from_bot_name="流光",
+            to_bot="223123",
+            to_bot_name="清风",
+            channel="social",
+            intent="say",
+            phase="active",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=2,
+            allowed_responders=["223123"],
+            payload={"text": "我们聊一下协作节奏。"},
+        )
+    )
+
+    assert session is not None
+    assert session.conversation_id == "social-inbound"
+    assert session.peer_bot_id == "114514"
+    assert session.channel == "social"
+    assert session.reply_budget == 2
+
+    outbound = manager.build_outbound_envelope(
+        message_envelope={
+            "message_info": {
+                "platform": "bot_relay",
+                "extra": {
+                    "relay_context": {
+                        "conversation_id": "social-inbound",
+                        "channel": "social",
+                        "peer_bot_id": "114514",
+                    }
+                },
+            },
+            "message_segment": [{"type": "text", "data": "收到，我们保持节制。"}],
+        },
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+    )
+
+    assert outbound.conversation_id == "social-inbound"
+    assert outbound.reply_budget == 1
+    assert outbound.expect_reply is True
 
 
 def test_force_social_ending_closes_session() -> None:

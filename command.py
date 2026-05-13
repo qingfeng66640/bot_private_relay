@@ -26,14 +26,20 @@ class RelayCommand(BaseCommand):
 
         stripped = message_text.strip()
         if stripped.startswith(self.command_prefix):
-            return False, "命令文本格式错误：RelayCommand.execute 只接受去掉前缀后的子路由文本"
+            result = False, "命令文本格式错误：RelayCommand.execute 只接受去掉前缀后的子路由文本"
+            await self._send_result_to_invoker(result[1])
+            return result
         parts = stripped.split(maxsplit=1)
         if parts and parts[0] == self.command_name:
-            return False, "命令文本格式错误：RelayCommand.execute 只接受去掉 command_name 后的子路由文本"
+            result = False, "命令文本格式错误：RelayCommand.execute 只接受去掉 command_name 后的子路由文本"
+            await self._send_result_to_invoker(result[1])
+            return result
         if parts and parts[0] in {"request", "social"}:
-            rest = parts[1] if len(parts) > 1 else ""
-            return await self._execute_send_command(parts[0], rest)
-        return await super().execute(message_text)
+            result = await self._execute_send_command(parts[0], parts[1] if len(parts) > 1 else "")
+        else:
+            result = await super().execute(message_text)
+        await self._send_result_to_invoker(result[1])
+        return result
 
     @cmd_route("status")
     async def status(self) -> tuple[bool, str]:
@@ -211,6 +217,30 @@ class RelayCommand(BaseCommand):
         if not sent:
             return False, f"relay {intent} send failed: {partner.bot_name or partner.bot_id}({partner.bot_id})"
         return True, f"relay {intent} sent to {partner.bot_name or 'unknown'}({partner.bot_id}): {text}"
+
+    async def _send_result_to_invoker(self, result_text: str) -> None:
+        """Send command result text back to the original invoking platform."""
+
+        if self._message is None or not result_text:
+            return
+
+        original_message = self._message
+        response = Message(
+            message_id=f"relay-command-result-{uuid4().hex}",
+            reply_to=self.message_id or original_message.message_id,
+            content=result_text,
+            processed_plain_text=result_text,
+            message_type=MessageType.TEXT,
+            platform=original_message.platform,
+            chat_type=original_message.chat_type,
+            stream_id=self.stream_id,
+            target_user_id=original_message.sender_id,
+            target_user_name=original_message.sender_name,
+        )
+        if original_message.chat_type == "group":
+            response.extra["group_id"] = original_message.extra.get("group_id")
+            response.extra["group_name"] = original_message.extra.get("group_name")
+        await get_message_sender().send_message(response)
 
     def _relay_config(self) -> BotPrivateRelayConfig | None:
         """Return typed plugin config if available."""

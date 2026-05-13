@@ -193,6 +193,41 @@ class SessionManager:
         )
         return session
 
+    def sync_inbound_social_session(self, envelope: RelayEnvelope) -> store.RelaySession | None:
+        """Persist inbound social state before the local bot replies."""
+
+        if envelope.channel != "social":
+            return None
+
+        existing = store.get_session(envelope.conversation_id)
+        phase = envelope.phase or (existing.phase if existing is not None else "active")
+        terminal = envelope.terminal or phase in self._SOCIAL_END_PHASES
+        reply_budget = 0 if terminal else envelope.reply_budget
+        allowed_responders = [] if terminal or reply_budget <= 0 else list(envelope.allowed_responders)
+        expect_reply = (
+            False
+            if terminal or reply_budget <= 0 or not allowed_responders
+            else envelope.expect_reply
+        )
+        session = store.RelaySession(
+            conversation_id=envelope.conversation_id,
+            peer_bot_id=envelope.from_bot,
+            channel="social",
+            intent=envelope.intent,
+            state=None,
+            terminal=terminal,
+            expect_reply=expect_reply,
+            reply_budget=reply_budget,
+            allowed_responders=allowed_responders,
+            phase=phase,
+            turn_count=existing.turn_count if existing is not None else 0,
+            max_turns=existing.max_turns if existing is not None else 6,
+            cooldown_seconds=envelope.cooldown_seconds,
+            cooldown_until=existing.cooldown_until if existing is not None else 0.0,
+        )
+        store.save_session(session)
+        return session
+
     def build_social_envelope(
         self,
         *,
@@ -222,10 +257,14 @@ class SessionManager:
             cooldown_seconds = existing.cooldown_seconds
         elif existing is not None:
             phase = existing.phase or "closed"
+            reply_budget = 0
         else:
             # First social message to this peer: advance from opening to active
             if phase == "opening":
                 phase = "active"
+
+        terminal = phase in ("ending", "closed") or reply_budget <= 0
+        allowed_responders = [to_bot] if not terminal else []
 
         envelope = RelayEnvelope(
             from_bot=from_bot,
@@ -238,9 +277,9 @@ class SessionManager:
             phase=phase,
             reply_budget=reply_budget,
             cooldown_seconds=cooldown_seconds,
-            allowed_responders=[to_bot] if phase not in ("ending", "closed") else [],
-            terminal=phase in ("ending", "closed"),
-            expect_reply=phase not in ("ending", "closed"),
+            allowed_responders=allowed_responders,
+            terminal=terminal,
+            expect_reply=not terminal,
             state=None,
         )
         if existing is not None:
@@ -453,10 +492,18 @@ class SessionManager:
         if phase == "cooling" and turns >= max_turns:
             phase = "ending"
 
+        session.reply_budget = max(0, session.reply_budget - 1)
+        if session.reply_budget <= 0:
+            phase = "ending" if phase != "closed" else phase
+
         if phase in ("ending", "closed"):
             session.terminal = True
             session.expect_reply = False
             session.reply_budget = 0
+            session.allowed_responders = []
+        else:
+            session.terminal = False
+            session.expect_reply = bool(session.allowed_responders)
 
         if cooldown_seconds > 0 and phase == "cooling":
             session.cooldown_until = time.time() + cooldown_seconds
