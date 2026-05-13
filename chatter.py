@@ -46,7 +46,9 @@ class BotRelayChatter(BaseChatter):
 4. transaction.notify 是单向通知；transaction.request 才表示对端期待你协作或回应。
 5. 若当前消息属于事务上下文，请优先遵守事务状态、意图、预算和终态约束。
 6. 调用 accept_transaction / confirm_transaction / decline_transaction / cancel_transaction 时，caller_bot 必须填写本机 bot_id。
-7. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
+7. 事务状态为 pending_reply 时，先调用 accept_transaction 表示接下事务；不要从 pending_reply 直接调用 confirm_transaction。
+8. 事务状态为 accepted 时，只有在事务已完成并应关闭时才调用 confirm_transaction；confirm_transaction 会直接进入 closed 终态。
+9. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
 """.strip()
 
     @property
