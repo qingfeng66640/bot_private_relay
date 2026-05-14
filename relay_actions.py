@@ -1,15 +1,13 @@
-"""Relay-only action wrappers around default_chatter actions."""
+"""Relay-only action components for bot_private_relay."""
 
 from __future__ import annotations
 
+import re
+from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
-from plugins.default_chatter.plugin import (
-    PassAndWaitAction,
-    SendTextAction,
-    StopConversationAction,
-)
+from src.core.components.base.action import BaseAction
 from src.core.models.message import Message, MessageType
 from src.kernel.logger import get_logger
 
@@ -18,10 +16,45 @@ from . import store
 logger = get_logger("bot_private_relay_actions")
 
 
-class BotRelaySendTextAction(SendTextAction):
+class BotRelaySendTextAction(BaseAction):
     """Relay-only send text action."""
 
+    action_name = "send_text"
+    action_description = "发送一段文本消息给对端 bot。content 只能包含要发送的正文；不要写行为理由、内心独白或格式说明。"
     chatter_allow = ["bot_relay_chatter"]
+
+    async def execute(
+        self,
+        content: str,
+        reply_to: str | None = None,
+        at: str | None = None,
+    ) -> AsyncGenerator[tuple[bool, str] | None, None]:
+        """Send text to the current relay peer.
+
+        Args:
+            content: 要发送给对端 bot 的正文。
+            reply_to: 兼容默认 send_text schema；bot_relay 私聊不使用引用回复。
+            at: 兼容默认 send_text schema；bot_relay 私聊不使用 @。
+        """
+
+        _ = reply_to, at
+        content = self._clean_content(content)
+        if not content:
+            yield True, "内容为空，跳过发送"
+            return
+        yield None
+        success = await self._send_to_stream(content)
+        yield success, f"已发送消息:{content}"
+
+    @staticmethod
+    def _clean_content(content: str) -> str:
+        """Remove tool-call reasoning leakage and relay-irrelevant @ prefixes."""
+
+        cleaned = re.split(r"[,，]?\s*reason[:：]", str(content or ""), flags=re.IGNORECASE)[0].strip()
+        at_match = re.match(r"^\s*@([^\s]+)\s*", cleaned)
+        if at_match:
+            cleaned = cleaned[at_match.end():].lstrip()
+        return cleaned
 
     async def _send_to_stream(
         self,
@@ -115,13 +148,37 @@ class BotRelaySendTextAction(SendTextAction):
         return {key: value for key, value in relay_context.items() if key != "intent"}
 
 
-class BotRelayPassAndWaitAction(PassAndWaitAction):
+class BotRelayPassAndWaitAction(BaseAction):
     """Relay-only pass action."""
 
+    action_name = "pass_and_wait"
+    action_description = "当前 relay 对话轮次不再主动发送内容，等待对端 bot 的下一条消息；可传入 seconds 表示稍后恢复。"
     chatter_allow = ["bot_relay_chatter"]
 
+    async def execute(self, seconds: float | None = None) -> tuple[bool, str]:
+        """Wait for the next relay message or an optional timer.
 
-class BotRelayStopConversationAction(StopConversationAction):
+        Args:
+            seconds: 等待秒数；为空时等待对端新消息。
+        """
+
+        if seconds is None:
+            return True, "已登记等待，将在本轮动作完成后等待新消息"
+        return True, f"已登记等待，将在本轮动作完成后等待 {seconds} 秒再继续对话"
+
+
+class BotRelayStopConversationAction(BaseAction):
     """Relay-only stop action."""
 
+    action_name = "stop_conversation"
+    action_description = "结束当前 relay 对话轮次，并在指定分钟数内避免主动继续。"
     chatter_allow = ["bot_relay_chatter"]
+
+    async def execute(self, minutes: float) -> tuple[bool, str]:
+        """Stop the current relay conversation turn.
+
+        Args:
+            minutes: 冷却时间，单位为分钟。
+        """
+
+        return True, f"对话已结束，将在 {minutes} 分钟后允许新对话"

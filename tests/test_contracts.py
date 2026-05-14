@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from typing import Any
 from mofox_wire import MessageEnvelope
-from plugins.default_chatter.plugin import DefaultChatter
 
 from plugins.bot_private_relay import command as relay_command_module
 from plugins.bot_private_relay.adapter import BotRelayAdapter
@@ -533,6 +532,13 @@ def test_relay_action_isolated_to_bot_relay_chatter() -> None:
     assert BotRelaySendTextAction.chatter_allow == ["bot_relay_chatter"]
 
 
+def test_relay_actions_do_not_import_default_chatter_plugin() -> None:
+    """Importing relay actions must not pre-register default_chatter."""
+
+    source = Path(__file__).resolve().parents[1].joinpath("relay_actions.py").read_text(encoding="utf-8")
+    assert "plugins.default_chatter.plugin" not in source
+
+
 def test_bot_relay_chatter_blocks_non_relay_usables() -> None:
     """Relay chatter must not expose unrelated global actions/tools."""
 
@@ -558,7 +564,7 @@ def test_bot_relay_chatter_blocks_non_relay_usables() -> None:
 
 def test_bot_relay_chatter_uses_base_chatter_not_default_chatter() -> None:
     assert issubclass(BotRelayChatter, BaseChatter)
-    assert DefaultChatter not in BotRelayChatter.__mro__
+    assert BotRelayChatter.__bases__ == (BaseChatter,)
 
 
 def test_bot_relay_context_summary_contains_relay_fields() -> None:
@@ -1055,7 +1061,9 @@ def test_command_request_sends_transaction_to_default_partner() -> None:
     assert adapter_signature == "bot_private_relay:adapter:bot_relay"
     assert message.platform == "bot_relay"
     assert message.chat_type == "private"
-    assert message.stream_id == ""
+    from src.core.models.stream import ChatStream
+
+    assert message.stream_id == ChatStream.generate_stream_id("bot_relay", user_id="114514")
     assert message.content == "请帮我整理会议纪要"
     relay_context = message.extra["relay_context"]
     assert relay_context["channel"] == "transaction"

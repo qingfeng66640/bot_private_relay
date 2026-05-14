@@ -8,6 +8,7 @@ from uuid import uuid4
 from src.app.plugin_system.base import BaseCommand, cmd_route
 from src.app.plugin_system.types import PermissionLevel
 from src.core.models.message import Message, MessageType
+from src.core.models.stream import ChatStream
 from src.core.transport.message_send import get_message_sender
 
 from .config import BotPrivateRelayConfig, PartnerSection
@@ -198,6 +199,10 @@ class RelayCommand(BaseCommand):
                 }
             )
 
+        target_stream_id = ChatStream.generate_stream_id(
+            "bot_relay",
+            user_id=partner.bot_id,
+        )
         message = Message(
             message_id=f"relay-command-{uuid4().hex}",
             content=text,
@@ -205,7 +210,7 @@ class RelayCommand(BaseCommand):
             message_type=MessageType.TEXT,
             platform="bot_relay",
             chat_type="private",
-            stream_id="",
+            stream_id=target_stream_id,
             target_user_id=partner.bot_id,
             target_user_name=partner.bot_name,
             relay_context=relay_context,
