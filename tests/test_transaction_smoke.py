@@ -3,11 +3,34 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from plugins.bot_private_relay.chatter import BotRelayChatter
 from plugins.bot_private_relay.config import BotPrivateRelayConfig, PartnerSection
 from plugins.bot_private_relay.plugin import BotPrivateRelayPlugin
 from plugins.bot_private_relay.scripts import mqtt_smoke_test
+
+
+def _stub_core_personality(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provide core personality for direct BotRelayChatter prompt tests."""
+
+    personality = SimpleNamespace(
+        nickname="清风",
+        alias_names=["qf"],
+        personality_core="温柔、可靠",
+        personality_side="表达克制",
+        identity="AI bot",
+        background_story="测试人格背景",
+        reply_style="自然口语化",
+        safety_guidelines=["保持安全"],
+        negative_behaviors=["不要绕过协议规则"],
+    )
+    monkeypatch.setattr(
+        "plugins.bot_private_relay.chatter.get_core_config",
+        lambda: SimpleNamespace(personality=personality),
+    )
 
 
 def build_config() -> BotPrivateRelayConfig:
@@ -76,8 +99,10 @@ def test_transaction_smoke_local_validation_covers_invalid_paths() -> None:
     assert mqtt_smoke_test._validate_local_lifecycle() == []  # noqa: SLF001 - smoke helper contract
 
 
-def test_bot_relay_chatter_prompt_explains_accept_first_lifecycle() -> None:
+def test_bot_relay_chatter_prompt_explains_accept_first_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
     """The relay prompt should steer LLMs away from direct pending confirm."""
+
+    _stub_core_personality(monkeypatch)
 
     chatter = BotRelayChatter(stream_id="s1", plugin=BotPrivateRelayPlugin(build_config()))
     prompt = chatter._build_system_prompt(  # noqa: SLF001 - prompt contract

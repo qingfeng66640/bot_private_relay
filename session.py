@@ -49,21 +49,21 @@ class SessionManager:
         context = relay_context if isinstance(relay_context, dict) else {}
         channel = str(context.get("channel") or "transaction")
         if channel == "social":
+            conversation_id = context.get("conversation_id")
+            explicit_conversation_id = conversation_id if isinstance(conversation_id, str) and conversation_id else None
             envelope = self.build_social_envelope(
                 from_bot=from_bot,
                 from_bot_name=from_bot_name,
                 to_bot=to_bot,
                 to_bot_name=to_bot_name,
                 text=text,
+                conversation_id=explicit_conversation_id,
                 phase=str(context.get("phase") or "opening"),
                 reply_budget=_context_int(context, "reply_budget", default_reply_budget),
                 cooldown_seconds=_context_int(context, "cooldown_seconds", 0),
                 max_turns=_context_int(context, "max_turns", 6),
             )
             envelope.ttl = default_ttl
-            conversation_id = context.get("conversation_id")
-            if isinstance(conversation_id, str) and conversation_id:
-                envelope.conversation_id = conversation_id
             trace_id = context.get("trace_id")
             if isinstance(trace_id, str) and trace_id:
                 envelope.trace_id = trace_id
@@ -162,8 +162,12 @@ class SessionManager:
             return None
 
         existing = store.get_session(envelope.conversation_id)
-        state = envelope.state or self._state_for_inbound_intent(envelope.intent, existing)
-        terminal = envelope.terminal or state == "closed" or envelope.intent in {"notify", "confirm", "decline", "cancel", "ack", "close"}
+        current_state = existing.state if existing is not None and existing.state else "created"
+        next_state = self._TRANSITIONS.get(current_state, {}).get(envelope.intent)
+        if next_state is None:
+            return existing
+        state = next_state
+        terminal = state == "closed"
         expect_reply = False if terminal else envelope.expect_reply
         reply_budget = 0 if terminal else envelope.reply_budget
         session = store.RelaySession(
@@ -236,6 +240,7 @@ class SessionManager:
         to_bot: str,
         to_bot_name: str,
         text: str,
+        conversation_id: str | None = None,
         phase: str = "opening",
         reply_budget: int = 3,
         cooldown_seconds: int = 0,
@@ -247,7 +252,7 @@ class SessionManager:
         turn count are used instead of the caller-supplied defaults.
         """
 
-        existing = self._find_social_session(to_bot)
+        existing = self._find_social_session(to_bot, conversation_id=conversation_id)
         if existing is not None and not existing.terminal:
             existing = self.advance_social_turn(
                 session=existing, max_turns=max_turns, cooldown_seconds=cooldown_seconds
@@ -284,15 +289,34 @@ class SessionManager:
         )
         if existing is not None:
             envelope.conversation_id = existing.conversation_id
+        elif conversation_id is not None:
+            envelope.conversation_id = conversation_id
         return self.apply_expect_reply_overrides(envelope)
 
-    def _find_social_session(self, peer_bot_id: str) -> store.RelaySession | None:
-        """Return a non-terminal social session for a peer bot."""
-        for session in store.SESSION_TABLE.values():
-            if session.peer_bot_id == peer_bot_id and session.channel == "social":
-                if (session.phase or "") not in ("closed",):
-                    return session
-        return None
+    def _find_social_session(
+        self,
+        peer_bot_id: str,
+        conversation_id: str | None = None,
+    ) -> store.RelaySession | None:
+        """Return the stored social session for a peer bot."""
+        if conversation_id is not None:
+            session = store.get_session(conversation_id)
+            if session is not None and session.peer_bot_id == peer_bot_id and session.channel == "social":
+                return session
+            return None
+
+        candidates = [
+            session
+            for session in store.SESSION_TABLE.values()
+            if session.peer_bot_id == peer_bot_id and session.channel == "social"
+        ]
+        active = [
+            session
+            for session in candidates
+            if not session.terminal and session.phase not in self._SOCIAL_END_PHASES
+        ]
+        pool = active or candidates
+        return max(pool, key=lambda session: session.updated_at) if pool else None
 
     def apply_expect_reply_overrides(self, envelope: RelayEnvelope) -> RelayEnvelope:
         """Apply the frozen Phase 3 expect_reply override priority."""
@@ -364,12 +388,12 @@ class SessionManager:
         if session is None:
             return False, "invalid_payload", None
         state = session.state or "created"
+        if session.terminal or state == "closed":
+            return False, "conversation_closed", session
         if action not in self._TRANSITIONS.get(state, {}):
             return False, "state_not_allowed", session
         if caller_bot not in session.allowed_responders:
             return False, "not_allowed_responder", session
-        if session.terminal or state == "closed":
-            return False, "conversation_closed", session
         if session.reply_budget <= 0:
             return False, "reply_budget_exhausted", session
         if not payload_complete:

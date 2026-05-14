@@ -82,3 +82,27 @@ class CancelTransactionTool(_BaseRelayTransactionTool):
     tool_name = "cancel_transaction"
     tool_description = "对事务请求执行取消，并执行六项硬校验。"
     action_intent = "cancel"
+
+
+class RescheduleTransactionTool(_BaseRelayTransactionTool):
+    """Request a transaction reschedule."""
+
+    tool_name = "reschedule_transaction"
+    tool_description = "对事务请求提出改期，并执行六项硬校验。"
+    action_intent = "reschedule"
+
+
+class AckTransactionTool(_BaseRelayTransactionTool):
+    """Acknowledge and close a pending transaction request."""
+
+    tool_name = "ack_transaction"
+    tool_description = "对事务请求执行收到确认并关闭事务，同时执行六项硬校验。"
+    action_intent = "ack"
+
+
+class CloseTransactionTool(_BaseRelayTransactionTool):
+    """Close a pending or reschedule transaction request."""
+
+    tool_name = "close_transaction"
+    tool_description = "对事务请求执行关闭，并执行六项硬校验。"
+    action_intent = "close"

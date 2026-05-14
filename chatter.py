@@ -18,6 +18,7 @@ from src.core.components.types import ChatType
 from src.core.managers.stream_manager import get_stream_manager
 from src.core.models.message import Message
 from src.core.models.stream import ChatStream
+from src.core.config import get_core_config
 from src.kernel.llm import LLMPayload, ROLE, Text
 from src.kernel.logger import get_logger
 
@@ -43,6 +44,9 @@ class BotRelayChatter(BaseChatter):
         "bot_private_relay:tool:confirm_transaction",
         "bot_private_relay:tool:decline_transaction",
         "bot_private_relay:tool:cancel_transaction",
+        "bot_private_relay:tool:reschedule_transaction",
+        "bot_private_relay:tool:ack_transaction",
+        "bot_private_relay:tool:close_transaction",
     }
 
     _RELAY_SYSTEM_GUIDANCE = """
@@ -54,10 +58,12 @@ class BotRelayChatter(BaseChatter):
 3. 当 relay_context.expect_reply=false 时，不要强行回复，不要没话找话。
 4. transaction.notify 是单向通知；transaction.request 才表示对端期待你协作或回应。
 5. 若当前消息属于事务上下文，请优先遵守事务状态、意图、预算和终态约束。
-6. 调用 accept_transaction / confirm_transaction / decline_transaction / cancel_transaction 时，caller_bot 必须填写本机 bot_id。
+6. 调用 accept_transaction / confirm_transaction / decline_transaction / cancel_transaction / reschedule_transaction / ack_transaction / close_transaction 时，caller_bot 必须填写本机 bot_id。
 7. 事务状态为 pending_reply 时，先调用 accept_transaction 表示接下事务；不要从 pending_reply 直接调用 confirm_transaction。
 8. 事务状态为 accepted 时，只有在事务已完成并应关闭时才调用 confirm_transaction；confirm_transaction 会直接进入 closed 终态。
-9. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
+9. reschedule_transaction 只能在 pending_reply 时提出改期，进入 reschedule_requested；该状态可再 accept / decline / cancel / close。
+10. ack_transaction 和 close_transaction 会关闭事务；只在无需继续协作或需要收束时使用。
+11. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
 """.strip()
 
     @property
@@ -182,6 +188,9 @@ class BotRelayChatter(BaseChatter):
                 tool_registry,
                 unread_messages[-1] if unread_messages else None,
             )
+            if not self._should_request_followup_after_tools(call_names):
+                logger.info("BotRelayChatter completed relay action turn without follow-up")
+                return Success("bot_relay_chatter completed relay action turn")
             logger.info("BotRelayChatter completed relay tool turn; requesting follow-up reply")
             return await self._run_followup_after_tools(
                 response=response,
@@ -194,6 +203,12 @@ class BotRelayChatter(BaseChatter):
 
         logger.info("BotRelayChatter LLM produced no text and no tool calls; nothing to send")
         return Success("bot_relay_chatter completed without tool calls")
+
+    @classmethod
+    def _should_request_followup_after_tools(cls, call_names: list[str]) -> bool:
+        """Return whether tool results need a follow-up relay action."""
+
+        return any(name.startswith("tool-") for name in call_names)
 
     async def _run_followup_after_tools(
         self,
@@ -295,6 +310,31 @@ class BotRelayChatter(BaseChatter):
                 "",
                 "# 当前协议上下文",
                 self._format_relay_context(relay_context),
+                "",
+                self._build_personality_prompt(),
+            ]
+        )
+
+    @staticmethod
+    def _build_personality_prompt() -> str:
+        """Build the complete core personality block for relay expression style."""
+
+        personality = get_core_config().personality
+        return "\n".join(
+            [
+                "# 完整人设",
+                "以下人设只用于影响允许回复后的语气、身份表达和语言风格；协议字段与硬门禁优先。",
+                f"- nickname: {personality.nickname}",
+                f"- alias_names: {'、'.join(personality.alias_names)}",
+                f"- personality_core: {personality.personality_core}",
+                f"- personality_side: {personality.personality_side}",
+                f"- identity: {personality.identity}",
+                f"- background_story: {personality.background_story}",
+                f"- reply_style: {personality.reply_style}",
+                "- safety_guidelines:",
+                *[f"  - {item}" for item in personality.safety_guidelines],
+                "- negative_behaviors:",
+                *[f"  - {item}" for item in personality.negative_behaviors],
             ]
         )
 
@@ -335,6 +375,11 @@ class BotRelayChatter(BaseChatter):
         if not relay_context:
             return False
         if relay_context.get("terminal") is True:
+            return False
+        if relay_context.get("phase") in {"ending", "closed"}:
+            return False
+        reply_budget = relay_context.get("reply_budget")
+        if isinstance(reply_budget, int) and reply_budget <= 0:
             return False
         if relay_context.get("expect_reply") is not True:
             return False

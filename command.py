@@ -193,7 +193,10 @@ class RelayCommand(BaseCommand):
         if channel == "social":
             relay_context.update(
                 {
+                    "conversation_id": uuid4().hex,
                     "phase": "opening",
+                    "terminal": False,
+                    "expect_reply": True,
                     "reply_budget": config.relay.default_reply_budget,
                     "allowed_responders": [partner.bot_id],
                 }

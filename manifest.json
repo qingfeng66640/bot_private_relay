@@ -57,6 +57,21 @@
       "dependencies": []
     },
     {
+      "component_type": "tool",
+      "component_name": "reschedule_transaction",
+      "dependencies": []
+    },
+    {
+      "component_type": "tool",
+      "component_name": "ack_transaction",
+      "dependencies": []
+    },
+    {
+      "component_type": "tool",
+      "component_name": "close_transaction",
+      "dependencies": []
+    },
+    {
       "component_type": "event_handler",
       "component_name": "loop_guard",
       "dependencies": []

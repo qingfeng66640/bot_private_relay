@@ -7,6 +7,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from mofox_wire import MessageEnvelope
 
@@ -34,6 +35,26 @@ from plugins.bot_private_relay.system_handler import SystemChannelHandler
 from plugins.bot_private_relay import store
 from src.core.components.base import BaseChatter, Success, Wait
 from src.core.models.message import Message, MessageType
+
+
+def _stub_core_personality(monkeypatch: Any) -> None:
+    """Provide core personality for direct BotRelayChatter unit tests."""
+
+    personality = SimpleNamespace(
+        nickname="清风",
+        alias_names=["qf"],
+        personality_core="温柔、可靠",
+        personality_side="表达克制",
+        identity="AI bot",
+        background_story="测试人格背景",
+        reply_style="自然口语化",
+        safety_guidelines=["保持安全"],
+        negative_behaviors=["不要绕过协议规则"],
+    )
+    monkeypatch.setattr(
+        "plugins.bot_private_relay.chatter.get_core_config",
+        lambda: SimpleNamespace(personality=personality),
+    )
 
 
 class DummySink:
@@ -614,8 +635,10 @@ def test_bot_relay_chatter_waits_when_context_does_not_expect_reply() -> None:
     assert isinstance(Wait(), Wait)
 
 
-def test_bot_relay_chatter_sends_plain_text_when_no_tool_call() -> None:
+def test_bot_relay_chatter_sends_plain_text_when_no_tool_call(monkeypatch: Any) -> None:
     """Plain LLM text must still leave through the relay send action."""
+
+    _stub_core_personality(monkeypatch)
 
     class FakeRequest:
         def __init__(self) -> None:
@@ -731,8 +754,10 @@ def test_bot_relay_chatter_falls_back_to_stream_when_non_stream_fails() -> None:
     assert request.stream_modes == [False, True]
 
 
-def test_bot_relay_chatter_runs_explicit_send_text_followup_after_transaction_tool_call() -> None:
+def test_bot_relay_chatter_runs_explicit_send_text_followup_after_transaction_tool_call(monkeypatch: Any) -> None:
     """Transaction tools may be followed by an explicit relay send_text call."""
+
+    _stub_core_personality(monkeypatch)
 
     class TransactionCall:
         name = "tool-confirm_transaction"
@@ -853,6 +878,111 @@ def test_bot_relay_chatter_runs_explicit_send_text_followup_after_transaction_to
     assert [getattr(call, "name", "") for call in tool_calls[1]["calls"]] == ["action-send_text"]
     assert tool_calls[1]["trigger_msg"] is unread
     assert sent == []
+
+
+def test_bot_relay_chatter_does_not_followup_after_initial_send_text_action(monkeypatch: Any) -> None:
+    """An initial send_text action already is the social reply for this turn."""
+
+    _stub_core_personality(monkeypatch)
+
+    class SendTextCall:
+        name = "action-send_text"
+
+    class InitialResponse:
+        message = ""
+        call_list = [SendTextCall()]
+
+        def __init__(self) -> None:
+            self.followup_stream_modes = []
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+        async def send(self, auto_append_response=True, stream=True):
+            self.followup_stream_modes.append(stream)
+            raise AssertionError("send_text action must not request a follow-up turn")
+
+    class FakeRequest:
+        def __init__(self, initial: InitialResponse) -> None:
+            self.initial = initial
+            self.payloads = []
+            self.stream_modes = []
+
+        def add_payload(self, payload):
+            self.payloads.append(payload)
+            return self
+
+        async def send(self, stream=True):
+            self.stream_modes.append(stream)
+            return self.initial
+
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    tool_calls: list[dict[str, Any]] = []
+    initial = InitialResponse()
+    fake_request = FakeRequest(initial)
+
+    def create_request(*args, **kwargs):
+        return fake_request
+
+    async def inject_usables(request):
+        return object()
+
+    async def run_tool_call(calls, response, usable_map, trigger_msg):
+        tool_calls.append({"calls": calls, "trigger_msg": trigger_msg})
+        return [(True, True)]
+
+    chatter.create_request = create_request  # type: ignore[method-assign]
+    chatter.inject_usables = inject_usables  # type: ignore[method-assign]
+    chatter.run_tool_call = run_tool_call  # type: ignore[method-assign]
+
+    unread = type(
+        "Msg",
+        (),
+        {
+            "message_id": "m-send-text",
+            "extra": {"relay_context": {"expect_reply": True}},
+            "processed_plain_text": "smoke request: 请回复确认",
+            "content": "smoke request: 请回复确认",
+            "sender_id": "114514",
+            "sender_name": "流光",
+            "sender_role": "bot",
+            "sender_cardname": "",
+            "time": 0,
+        },
+    )()
+    stream = type(
+        "Stream",
+        (),
+        {"context": type("Context", (), {"history_messages": []})()},
+    )()
+
+    result = __import__("asyncio").run(
+        chatter._run_relay_turn(
+            chat_stream=stream,
+            unread_text="smoke request: 请回复确认",
+            unread_messages=[unread],
+            relay_context={
+                "peer_bot_id": "114514",
+                "peer_bot_name": "流光",
+                "channel": "social",
+                "intent": "say",
+                "expect_reply": True,
+                "reply_budget": 3,
+                "terminal": False,
+            },
+        )
+    )
+
+    assert isinstance(result, Success)
+    assert fake_request.stream_modes == [False]
+    assert initial.followup_stream_modes == []
+    assert len(tool_calls) == 1
+    assert [getattr(call, "name", "") for call in tool_calls[0]["calls"]] == ["action-send_text"]
+    assert tool_calls[0]["trigger_msg"] is unread
 
 
 def test_bot_relay_chatter_suppresses_bare_followup_text_after_tool_call() -> None:
@@ -1092,6 +1222,50 @@ def test_command_social_sends_to_explicit_partner() -> None:
     assert relay_context["intent"] == "say"
     assert relay_context["peer_bot_id"] == "114514"
     assert relay_context["allowed_responders"] == ["114514"]
+    assert isinstance(relay_context["conversation_id"], str)
+    assert relay_context["conversation_id"]
+
+
+def test_command_social_starts_fresh_conversation_each_manual_send() -> None:
+    """Manual social sends should not reuse an ended peer social session."""
+
+    store.reset_state()
+    store.save_session(
+        store.RelaySession(
+            conversation_id="social-ended",
+            peer_bot_id="114514",
+            channel="social",
+            intent="say",
+            phase="ending",
+            terminal=True,
+            expect_reply=False,
+            reply_budget=0,
+            allowed_responders=[],
+        )
+    )
+    plugin = BotPrivateRelayPlugin(build_config())
+    command = RelayCommand(plugin=plugin, stream_id="s1")
+    sender = RecordingMessageSender()
+    original = relay_command_module.get_message_sender
+    relay_command_module.get_message_sender = lambda: sender
+    try:
+        first_success, _first_text = asyncio.run(command.execute("social to 114514 第一轮新社交测试"))
+        second_success, _second_text = asyncio.run(command.execute("social to 114514 第二轮新社交测试"))
+    finally:
+        relay_command_module.get_message_sender = original
+
+    assert first_success is True
+    assert second_success is True
+    assert len(sender.calls) == 2
+    first_context = sender.calls[0][0].extra["relay_context"]
+    second_context = sender.calls[1][0].extra["relay_context"]
+    assert first_context["conversation_id"] != "social-ended"
+    assert second_context["conversation_id"] != "social-ended"
+    assert first_context["conversation_id"] != second_context["conversation_id"]
+    assert first_context["expect_reply"] is True
+    assert second_context["expect_reply"] is True
+    assert first_context["allowed_responders"] == ["114514"]
+    assert second_context["allowed_responders"] == ["114514"]
 
 
 def test_command_rejects_unknown_explicit_partner() -> None:

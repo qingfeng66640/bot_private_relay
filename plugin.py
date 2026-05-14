@@ -18,9 +18,12 @@ from .relay_actions import (
 from .router import BotPrivateRelayRouter
 from .relay_tools import (
     AcceptTransactionTool,
+    AckTransactionTool,
     CancelTransactionTool,
+    CloseTransactionTool,
     ConfirmTransactionTool,
     DeclineTransactionTool,
+    RescheduleTransactionTool,
 )
 from .service import RelayStateService
 
@@ -52,6 +55,9 @@ class BotPrivateRelayPlugin(BasePlugin):
             ConfirmTransactionTool,
             DeclineTransactionTool,
             CancelTransactionTool,
+            RescheduleTransactionTool,
+            AckTransactionTool,
+            CloseTransactionTool,
             LoopGuardEventHandler,
             RelayCommand,
             RelayStateService,
