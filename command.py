@@ -12,6 +12,7 @@ from src.core.models.stream import ChatStream
 from src.core.transport.message_send import get_message_sender
 
 from .config import BotPrivateRelayConfig, PartnerSection
+from .dynamic_social import DynamicSocialLimiter
 from .service import RelayStateService
 
 
@@ -182,6 +183,10 @@ class RelayCommand(BaseCommand):
         partner, error = self._resolve_partner(config, target_bot_id)
         if partner is None:
             return False, error or "relay send failed: partner unavailable"
+        if channel == "social":
+            ok, code = DynamicSocialLimiter(config).allow(target_bot_id=partner.bot_id, source="user_command")
+            if not ok:
+                return False, f"relay social denied: {code}"
 
         relay_context: dict[str, object] = {
             "channel": channel,

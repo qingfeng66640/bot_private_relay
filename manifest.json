@@ -72,6 +72,11 @@
       "dependencies": []
     },
     {
+      "component_type": "tool",
+      "component_name": "relay_social_contact",
+      "dependencies": []
+    },
+    {
       "component_type": "event_handler",
       "component_name": "loop_guard",
       "dependencies": []

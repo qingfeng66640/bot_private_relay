@@ -8,6 +8,7 @@ from .adapter import BotRelayAdapter
 from .chatter import BotRelayChatter
 from .command import RelayCommand
 from .config import BotPrivateRelayConfig
+from .dynamic_social import RelaySocialContactTool, register_relay_config
 from .event_handler import LoopGuardEventHandler
 from .memory_bridge import MemoryBridgeService
 from .relay_actions import (
@@ -58,9 +59,21 @@ class BotPrivateRelayPlugin(BasePlugin):
             RescheduleTransactionTool,
             AckTransactionTool,
             CloseTransactionTool,
+            RelaySocialContactTool,
             LoopGuardEventHandler,
             RelayCommand,
             RelayStateService,
             MemoryBridgeService,
             BotPrivateRelayRouter,
         ]
+
+    async def on_plugin_loaded(self) -> None:
+        """Expose relay social contact for todo_plugin bot task execution."""
+
+        if isinstance(self.config, BotPrivateRelayConfig):
+            register_relay_config(self.config)
+        try:
+            from plugins.todo_plugin.registry import register_bot_tool
+        except Exception:
+            return
+        register_bot_tool(RelaySocialContactTool)

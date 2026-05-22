@@ -97,6 +97,9 @@ TRANSACTION_LOG: dict[str, RelayTransactionRecord] = {}
 RELAY_TODOS: dict[str, RelayTodoItem] = {}
 RELAY_SCHEDULES: dict[str, RelayScheduleItem] = {}
 RELAY_MEMORY_CANDIDATES: dict[str, RelayMemoryCandidate] = {}
+DYNAMIC_SOCIAL_DAILY_COUNTS: dict[tuple[str, str], int] = {}
+DYNAMIC_SOCIAL_HOURLY_COUNTS: dict[tuple[str, str], int] = {}
+DYNAMIC_SOCIAL_COOLDOWNS: dict[str, float] = {}
 
 
 def reset_state() -> None:
@@ -110,6 +113,9 @@ def reset_state() -> None:
     RELAY_TODOS.clear()
     RELAY_SCHEDULES.clear()
     RELAY_MEMORY_CANDIDATES.clear()
+    DYNAMIC_SOCIAL_DAILY_COUNTS.clear()
+    DYNAMIC_SOCIAL_HOURLY_COUNTS.clear()
+    DYNAMIC_SOCIAL_COOLDOWNS.clear()
 
 
 def remember_message(message_id: str, ttl_seconds: int = 3600) -> bool:

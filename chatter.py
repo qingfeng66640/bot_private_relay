@@ -60,10 +60,11 @@ class BotRelayChatter(BaseChatter):
 5. 若当前消息属于事务上下文，请优先遵守事务状态、意图、预算和终态约束。
 6. 调用 accept_transaction / confirm_transaction / decline_transaction / cancel_transaction / reschedule_transaction / ack_transaction / close_transaction 时，caller_bot 必须填写本机 bot_id。
 7. 事务状态为 pending_reply 时，先调用 accept_transaction 表示接下事务；不要从 pending_reply 直接调用 confirm_transaction。
-8. 事务状态为 accepted 时，只有在事务已完成并应关闭时才调用 confirm_transaction；confirm_transaction 会直接进入 closed 终态。
-9. reschedule_transaction 只能在 pending_reply 时提出改期，进入 reschedule_requested；该状态可再 accept / decline / cancel / close。
-10. ack_transaction 和 close_transaction 会关闭事务；只在无需继续协作或需要收束时使用。
-11. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
+8. accept_transaction 只表示接下事务，不会写入 todo；如果你已经给出最终承诺、任务已完成，或当前事务已经可以沉淀为 bot 计划，必须在 accepted 状态继续调用 confirm_transaction。
+9. 事务状态为 accepted 时，只有在事务已完成并应关闭时才调用 confirm_transaction；confirm_transaction 会直接进入 closed 终态，并触发 todo bridge。
+10. reschedule_transaction 只能在 pending_reply 时提出改期，进入 reschedule_requested；该状态可再 accept / decline / cancel / close。
+11. ack_transaction 和 close_transaction 会关闭事务；只在无需继续协作或需要收束时使用。
+12. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
 """.strip()
 
     @property
@@ -182,6 +183,7 @@ class BotRelayChatter(BaseChatter):
 
         if response.call_list:
             logger.info(f"BotRelayChatter executing tool calls: {call_names}")
+            self._harden_transaction_tool_calls(response.call_list, relay_context)
             await self.run_tool_call(
                 response.call_list,
                 response,
@@ -196,6 +198,7 @@ class BotRelayChatter(BaseChatter):
                 response=response,
                 tool_registry=tool_registry,
                 trigger_message=unread_messages[-1] if unread_messages else None,
+                relay_context=relay_context,
             )
 
         if message_text:
@@ -216,6 +219,7 @@ class BotRelayChatter(BaseChatter):
         response: Any,
         tool_registry: Any,
         trigger_message: Message | None,
+        relay_context: dict[str, Any] | None = None,
     ) -> ChatterResult:
         """Ask the LLM to turn tool results into an outbound relay reply."""
 
@@ -236,6 +240,7 @@ class BotRelayChatter(BaseChatter):
             logger.info(
                 f"BotRelayChatter executing follow-up tool calls: {follow_call_names}"
             )
+            self._harden_transaction_tool_calls(follow_response.call_list, relay_context or {})
             await self.run_tool_call(
                 follow_response.call_list,
                 follow_response,
@@ -249,6 +254,50 @@ class BotRelayChatter(BaseChatter):
 
         logger.info("BotRelayChatter follow-up produced no text and no tool calls")
         return Success("bot_relay_chatter completed relay tool turn without follow-up text")
+
+    def _harden_transaction_tool_calls(
+        self,
+        calls: list[Any],
+        relay_context: dict[str, Any],
+    ) -> None:
+        """Force protocol-critical transaction args from current relay context."""
+
+        conversation_id = str(relay_context.get("conversation_id") or "").strip()
+        caller_bot = self.relay_config.relay.bot_id
+        if not conversation_id:
+            return
+        transaction_tools = {
+            "tool-accept_transaction",
+            "tool-confirm_transaction",
+            "tool-decline_transaction",
+            "tool-cancel_transaction",
+            "tool-reschedule_transaction",
+            "tool-ack_transaction",
+            "tool-close_transaction",
+        }
+        for call in calls:
+            name = getattr(call, "name", "")
+            if name not in transaction_tools:
+                continue
+            args = getattr(call, "args", None)
+            if not isinstance(args, dict):
+                logger.warning(
+                    "BotRelayChatter replacing non-dict transaction tool args: "
+                    f"tool={name}, conversation_id={conversation_id}, caller_bot={caller_bot}"
+                )
+                object.__setattr__(call, "args", {})
+                args = call.args
+            original_conversation_id = str(args.get("conversation_id") or "")
+            original_caller_bot = str(args.get("caller_bot") or "")
+            args["conversation_id"] = conversation_id
+            args["caller_bot"] = caller_bot
+            if original_conversation_id != conversation_id or original_caller_bot != caller_bot:
+                logger.warning(
+                    "BotRelayChatter corrected transaction tool args from relay_context: "
+                    f"tool={name}, original_conversation_id={original_conversation_id}, "
+                    f"conversation_id={conversation_id}, original_caller_bot={original_caller_bot}, "
+                    f"caller_bot={caller_bot}"
+                )
 
     async def _send_plain_text_response(
         self,

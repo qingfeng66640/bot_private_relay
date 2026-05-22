@@ -16,6 +16,7 @@ from plugins.bot_private_relay.adapter import BotRelayAdapter
 from plugins.bot_private_relay.command import RelayCommand
 from plugins.bot_private_relay.chatter import BotRelayChatter
 from plugins.bot_private_relay.config import BotPrivateRelayConfig, PartnerSection
+from plugins.bot_private_relay.dynamic_social import RelaySocialContactTool
 from plugins.bot_private_relay.envelope import RelayEnvelope
 from plugins.bot_private_relay.event_handler import LoopGuardEventHandler
 from plugins.bot_private_relay.memory_bridge import MemoryBridgeService
@@ -112,7 +113,9 @@ def test_manifest_and_plugin_identity() -> None:
     components = plugin.get_components()
     assert components
     assert AcceptTransactionTool in components
+    assert RelaySocialContactTool in components
     assert MemoryBridgeService in components
+    assert "relay_social_contact" in tools
 
 
 # ── Config ────────────────────────────────────────────────────────────
@@ -123,6 +126,13 @@ def test_config_partner_lookup_uses_bot_id() -> None:
     assert partner is not None
     assert partner.bot_name == "流光"
     assert config.first_allowed_partner() is partner
+
+
+def test_config_social_quota_lookup_uses_partner_slot() -> None:
+    config = build_config()
+    quota = config.social_quota_by_id("114514")
+    assert quota is not None
+    assert quota.max_per_day == 5
 
 
 def test_config_default_path_matches_framework_convention() -> None:
@@ -1038,6 +1048,27 @@ def test_bot_relay_chatter_suppresses_bare_followup_text_after_tool_call() -> No
     assert sent == []
 
 
+def test_bot_relay_chatter_hardens_transaction_tool_args(monkeypatch: Any) -> None:
+    """Transaction tools must use current relay_context ids, not model-guessed ids."""
+
+    _stub_core_personality(monkeypatch)
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    call = SimpleNamespace(
+        name="tool-accept_transaction",
+        args={"conversation_id": "message-id", "caller_bot": "114514", "reason": "接下"},
+    )
+
+    chatter._harden_transaction_tool_calls(
+        [call],
+        {"conversation_id": "conv-real"},
+    )
+
+    assert call.args["conversation_id"] == "conv-real"
+    assert call.args["caller_bot"] == "223123"
+    assert call.args["reason"] == "接下"
+
+
 # ── LoopGuard ─────────────────────────────────────────────────────────
 
 def test_loop_guard_received_dedup_and_sent_boundary() -> None:
@@ -1202,7 +1233,10 @@ def test_command_request_sends_transaction_to_default_partner() -> None:
 
 
 def test_command_social_sends_to_explicit_partner() -> None:
+    store.reset_state()
     plugin = BotPrivateRelayPlugin(build_config())
+    plugin.config.dynamic_social.default_cooldown_seconds = 0
+    plugin.config.social_quotas.bot_b.cooldown_seconds = 0
     command = RelayCommand(plugin=plugin, stream_id="s1")
     sender = RecordingMessageSender()
     original = relay_command_module.get_message_sender
@@ -1244,6 +1278,8 @@ def test_command_social_starts_fresh_conversation_each_manual_send() -> None:
         )
     )
     plugin = BotPrivateRelayPlugin(build_config())
+    plugin.config.dynamic_social.default_cooldown_seconds = 0
+    plugin.config.social_quotas.bot_b.cooldown_seconds = 0
     command = RelayCommand(plugin=plugin, stream_id="s1")
     sender = RecordingMessageSender()
     original = relay_command_module.get_message_sender
@@ -1266,6 +1302,29 @@ def test_command_social_starts_fresh_conversation_each_manual_send() -> None:
     assert second_context["expect_reply"] is True
     assert first_context["allowed_responders"] == ["114514"]
     assert second_context["allowed_responders"] == ["114514"]
+
+
+def test_command_social_consumes_dynamic_social_quota() -> None:
+    store.reset_state()
+    plugin = BotPrivateRelayPlugin(build_config())
+    plugin.config.dynamic_social.default_max_per_day = 1
+    plugin.config.dynamic_social.default_cooldown_seconds = 0
+    plugin.config.social_quotas.bot_b.max_per_day = 1
+    plugin.config.social_quotas.bot_b.cooldown_seconds = 0
+    command = RelayCommand(plugin=plugin, stream_id="s1")
+    sender = RecordingMessageSender()
+    original = relay_command_module.get_message_sender
+    relay_command_module.get_message_sender = lambda: sender
+    try:
+        first_success, _first_text = asyncio.run(command.execute("social to 114514 第一条"))
+        second_success, second_text = asyncio.run(command.execute("social to 114514 第二条"))
+    finally:
+        relay_command_module.get_message_sender = original
+
+    assert first_success is True
+    assert second_success is False
+    assert "daily_social_quota_exhausted" in second_text
+    assert len(sender.calls) == 1
 
 
 def test_command_rejects_unknown_explicit_partner() -> None:
@@ -1357,6 +1416,7 @@ def test_confirm_tool_requires_accepted_state() -> None:
         )
     )
     plugin = BotPrivateRelayPlugin(build_config())
+    plugin.config.todo_bridge.enabled = False
     success, payload = __import__("asyncio").run(
         ConfirmTransactionTool(plugin).execute(
             conversation_id="conv-001",
@@ -1371,7 +1431,8 @@ def test_confirm_tool_requires_accepted_state() -> None:
     assert store.SESSION_TABLE["conv-001"].reply_budget == 0
     assert store.TRANSACTION_LOG["conv-001"].current_state == "closed"
     assert store.TRANSACTION_LOG["conv-001"].final_intent == "confirm"
-    assert store.RELAY_TODOS
+    assert payload["todo_bridge_status"] == "todo_bridge_disabled"
+    assert not store.RELAY_TODOS
 
 
 def test_confirm_from_pending_reply_is_rejected() -> None:
@@ -1400,6 +1461,172 @@ def test_confirm_from_pending_reply_is_rejected() -> None:
     )
     assert success is False
     assert payload["status"] == "state_not_allowed"
+
+
+def test_confirm_tool_fails_when_todo_bridge_unavailable() -> None:
+    store.reset_state()
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-bridge-missing",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="request",
+            state="accepted",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=3,
+            allowed_responders=["114514"],
+        )
+    )
+    store.save_transaction_record(
+        store.RelayTransactionRecord(
+            conversation_id="conv-bridge-missing",
+            trace_id="trace-bridge-missing",
+            from_bot="223123",
+            to_bot="114514",
+            current_state="accepted",
+            topic="整理会议纪要",
+            summary="整理会议纪要",
+        )
+    )
+    plugin = BotPrivateRelayPlugin(build_config())
+    plugin.config.todo_bridge.max_retries = 0
+    success, payload = asyncio.run(
+        ConfirmTransactionTool(plugin).execute(
+            conversation_id="conv-bridge-missing",
+            caller_bot="114514",
+            reason="确认完成",
+        )
+    )
+
+    assert success is False
+    assert payload["status"] == "todo_bridge_retry_exhausted"
+    assert payload["todo_bridge"]["error"] == "no todo bridge listener"
+    assert not store.RELAY_TODOS
+
+
+def test_confirm_tool_publishes_todo_bridge_before_closing_transaction() -> None:
+    store.reset_state()
+    from src.kernel.event import EventDecision, get_event_bus
+
+    observed: list[dict[str, Any]] = []
+
+    async def handler(_event_name: str, params: dict[str, Any]):
+        payload = params["payload"]
+        observed.append(dict(payload))
+        result = params["result"]
+        result.update({"ok": True, "todo_uid": "bot-todo-1", "status": "created", "error": ""})
+        return EventDecision.SUCCESS, params
+
+    unsubscribe = get_event_bus().subscribe("bot_relay.todo_decided", handler)
+    try:
+        store.save_session(
+            store.RelaySession(
+                conversation_id="conv-bridge-ok",
+                peer_bot_id="114514",
+                channel="transaction",
+                intent="request",
+                state="accepted",
+                terminal=False,
+                expect_reply=True,
+                reply_budget=3,
+                allowed_responders=["114514"],
+            )
+        )
+        store.save_transaction_record(
+            store.RelayTransactionRecord(
+                conversation_id="conv-bridge-ok",
+                trace_id="trace-bridge-ok",
+                from_bot="223123",
+                to_bot="114514",
+                current_state="accepted",
+                topic="整理会议纪要",
+                summary="整理会议纪要",
+            )
+        )
+        plugin = BotPrivateRelayPlugin(build_config())
+        success, payload = asyncio.run(
+            ConfirmTransactionTool(plugin).execute(
+                conversation_id="conv-bridge-ok",
+                caller_bot="114514",
+                reason="确认完成",
+            )
+        )
+    finally:
+        unsubscribe()
+
+    assert success is True
+    assert payload["status"] == "ok"
+    assert payload["todo_bridge_status"] == "created"
+    assert observed[0]["conversation_id"] == "conv-bridge-ok"
+    assert observed[0]["decision"] == "confirm"
+    assert observed[0]["source_stream_id"] == "bot_relay:114514"
+    assert observed[0]["owner_bot"] == "114514"
+    assert observed[0]["peer_bot_id"] == "223123"
+    assert "与 223123" in observed[0]["title"]
+    assert store.TRANSACTION_LOG["conv-bridge-ok"].final_intent == "confirm"
+    assert store.SESSION_TABLE["conv-bridge-ok"].state == "closed"
+    assert not store.RELAY_TODOS
+
+
+def test_adapter_publishes_local_todo_projection_on_inbound_confirm() -> None:
+    store.reset_state()
+    from src.kernel.event import EventDecision, get_event_bus
+
+    observed: list[dict[str, Any]] = []
+
+    async def handler(_event_name: str, params: dict[str, Any]):
+        observed.append(dict(params["payload"]))
+        params["result"].update({"ok": True, "todo_uid": "local-todo", "status": "created", "error": ""})
+        return EventDecision.SUCCESS, params
+
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-inbound-confirm",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="accept",
+            state="accepted",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=1,
+            allowed_responders=["114514"],
+        )
+    )
+    adapter = build_adapter()
+    unsubscribe = get_event_bus().subscribe("bot_relay.todo_decided", handler)
+    try:
+        envelope = asyncio.run(
+            adapter.from_platform_message(
+                {
+                    "from_bot": "114514",
+                    "from_bot_name": "流光",
+                    "to_bot": "223123",
+                    "to_bot_name": "清风",
+                    "channel": "transaction",
+                    "intent": "confirm",
+                    "expect_reply": False,
+                    "reply_budget": 0,
+                    "terminal": True,
+                    "allowed_responders": [],
+                    "hop": 0,
+                    "ttl": 4,
+                    "message_id": "m-inbound-confirm",
+                    "conversation_id": "conv-inbound-confirm",
+                    "trace_id": "trace-inbound-confirm",
+                    "payload": {"text": "一点钟一起吃饭吗?"},
+                }
+            )
+        )
+    finally:
+        unsubscribe()
+
+    assert envelope is not None
+    assert observed
+    assert observed[0]["conversation_id"] == "conv-inbound-confirm"
+    assert observed[0]["owner_bot"] == "223123"
+    assert observed[0]["peer_bot_id"] == "114514"
+    assert observed[0]["source_stream_id"] == "bot_relay:223123"
 
 
 def test_validate_transaction_action_error_codes_match_plan_enum() -> None:
@@ -1443,6 +1670,51 @@ def test_validate_transaction_action_error_codes_match_plan_enum() -> None:
     assert ok is True
     assert code == "ok"
     assert code in allowed_codes
+
+
+def test_relay_social_contact_tool_uses_registered_relay_config(monkeypatch: Any) -> None:
+    store.reset_state()
+    from plugins.bot_private_relay.dynamic_social import register_relay_config
+    from plugins.todo_plugin.plugin import TodoPlugin
+
+    config = build_config()
+    config.dynamic_social.default_cooldown_seconds = 0
+    config.social_quotas.bot_b.cooldown_seconds = 0
+    register_relay_config(config)
+    sender = RecordingMessageSender()
+    monkeypatch.setattr(
+        "plugins.bot_private_relay.dynamic_social.get_message_sender",
+        lambda: sender,
+    )
+
+    success, text = asyncio.run(
+        RelaySocialContactTool(TodoPlugin()).execute(
+            target_bot_id="114514",
+            message="到点了，我们继续协作。",
+            reason="todo_execution",
+        )
+    )
+
+    assert success is True
+    assert "114514" in text
+    assert len(sender.calls) == 1
+    message, adapter_signature = sender.calls[0]
+    assert adapter_signature == "bot_private_relay:adapter:bot_relay"
+    assert message.platform == "bot_relay"
+    assert message.extra["relay_context"]["channel"] == "social"
+
+
+def test_plugin_loaded_registers_relay_social_tool(monkeypatch: Any) -> None:
+    registered: list[type] = []
+    monkeypatch.setattr(
+        "plugins.todo_plugin.registry.register_bot_tool",
+        lambda tool_cls: registered.append(tool_cls),
+    )
+    plugin = BotPrivateRelayPlugin(build_config())
+
+    asyncio.run(plugin.on_plugin_loaded())
+
+    assert registered == [RelaySocialContactTool]
 
 
 def test_outbound_envelope_can_infer_accept_from_session_state() -> None:

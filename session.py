@@ -197,6 +197,37 @@ class SessionManager:
         )
         return session
 
+    async def publish_inbound_final_todo_decision(
+        self,
+        *,
+        envelope: RelayEnvelope,
+        local_bot_id: str,
+        config: object,
+    ) -> tuple[bool, str, dict[str, object]] | None:
+        """Publish a local todo projection after receiving a final confirm."""
+
+        if envelope.channel != "transaction" or envelope.intent != "confirm":
+            return None
+        record = store.TRANSACTION_LOG.get(envelope.conversation_id)
+        if record is None:
+            return None
+        session = store.get_session(envelope.conversation_id)
+        if session is None or not session.terminal:
+            return None
+
+        from .config import BotPrivateRelayConfig
+        from .todo_bridge import TodoBridge
+
+        if not isinstance(config, BotPrivateRelayConfig):
+            return None
+        result = await TodoBridge(config).publish_final_decision(
+            record=record,
+            final_intent="confirm",
+            owner_bot=local_bot_id,
+            peer_bot_id=envelope.from_bot,
+        )
+        return result
+
     def sync_inbound_social_session(self, envelope: RelayEnvelope) -> store.RelaySession | None:
         """Persist inbound social state before the local bot replies."""
 
@@ -400,7 +431,13 @@ class SessionManager:
             return False, "invalid_payload", session
         return True, "ok", session
 
-    def apply_transaction_action(self, *, conversation_id: str, action: str, caller_bot: str) -> store.RelaySession:
+    def apply_transaction_action(
+        self,
+        *,
+        conversation_id: str,
+        action: str,
+        caller_bot: str,
+    ) -> store.RelaySession:
         """Advance session after a validated tool action."""
 
         session = store.get_session(conversation_id)
@@ -420,8 +457,6 @@ class SessionManager:
             record.current_state = next_state
             record.final_intent = action if session.terminal else record.final_intent
             store.save_transaction_record(record)
-            if action == "confirm":
-                store.save_todo(store.RelayTodoItem(todo_id=uuid4().hex, owner_bot=caller_bot, title=record.topic or "relay task"))
         return session
 
     def _find_session_for_outbound(self, *, context: dict[str, object], message_envelope: MessageEnvelope, to_bot: str) -> store.RelaySession | None:

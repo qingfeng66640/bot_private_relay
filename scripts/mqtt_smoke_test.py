@@ -321,6 +321,7 @@ def _validate_local_lifecycle() -> list[str]:
     config.relay.bot_id = BOT_A_ID
     config.relay.bot_name = BOT_A_NAME
     config.partners.bot_b = PartnerSection(bot_id=BOT_B_ID, bot_name=BOT_B_NAME)
+    config.todo_bridge.enabled = False
     plugin = BotPrivateRelayPlugin(config)
 
     wrong_ok, wrong_payload = asyncio.run(

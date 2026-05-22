@@ -406,6 +406,20 @@ class BotRelayAdapter(BaseAdapter):
         if system_handler.handle(relay_envelope):
             return None
         self._session_manager.sync_inbound_transaction_session(relay_envelope)
+        inbound_todo_result = await self._session_manager.publish_inbound_final_todo_decision(
+            envelope=relay_envelope,
+            local_bot_id=self.relay_config.relay.bot_id,
+            config=self.relay_config,
+        )
+        if inbound_todo_result is not None:
+            ok, status, result = inbound_todo_result
+            logger.info(
+                "Inbound relay final decision todo projection handled: "
+                f"conversation_id={relay_envelope.conversation_id}, "
+                f"owner_bot={self.relay_config.relay.bot_id}, "
+                f"peer_bot_id={relay_envelope.from_bot}, "
+                f"ok={ok}, status={status}, todo_uid={result.get('todo_uid', '')}"
+            )
         self._session_manager.sync_inbound_social_session(relay_envelope)
         return MessageEnvelope(
             direction="incoming",

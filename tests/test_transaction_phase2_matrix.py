@@ -45,6 +45,7 @@ def _build_config() -> Any:
     config.relay.bot_name = "清风"
     config.partners.bot_b = PartnerSection(bot_id="114514", bot_name="流光")
     config.presence.allowed_partner_bots = ["114514"]
+    config.todo_bridge.enabled = False
     return config
 
 
