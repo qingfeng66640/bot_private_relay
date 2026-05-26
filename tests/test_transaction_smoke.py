@@ -126,5 +126,7 @@ def test_bot_relay_chatter_prompt_explains_accept_first_lifecycle(monkeypatch: p
     assert "confirm_transaction" in prompt
     assert "closed" in prompt
     assert "不要从 pending_reply 直接调用 confirm_transaction" in prompt
-    assert "accept_transaction 只表示接下事务，不会写入 todo" in prompt
+    assert "accept_transaction 只表示接下原提案，不会写入 todo" in prompt
+    assert "如果要发送文本，必须同时调用一个事务 tool" in prompt
+    assert "对端若接受当前改期方案，应直接调用 confirm_transaction" in prompt
     assert "confirm_transaction 会直接进入 closed 终态，并触发 todo bridge" in prompt

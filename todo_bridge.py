@@ -95,6 +95,8 @@ class TodoBridge:
                     logger.info(
                         "Relay todo bridge accepted decision: "
                         f"conversation_id={record.conversation_id}, "
+                        f"owner_bot={owner_bot}, peer_bot_id={normalized_peer_bot_id}, "
+                        f"attempt={attempt + 1}/{attempts}, "
                         f"status={event_result.get('status')}, "
                         f"todo_uid={event_result.get('todo_uid', '')}"
                     )
@@ -118,13 +120,24 @@ class TodoBridge:
                     f"error={exc}"
                 )
             if attempt + 1 < attempts:
-                await asyncio.sleep(max(0.0, float(bridge.retry_backoff_seconds)))
+                retry_backoff = max(0.0, float(bridge.retry_backoff_seconds))
+                logger.warning(
+                    "Relay todo bridge publish attempt failed; retrying: "
+                    f"conversation_id={record.conversation_id}, "
+                    f"owner_bot={owner_bot}, peer_bot_id={normalized_peer_bot_id}, "
+                    f"attempt={attempt + 1}/{attempts}, "
+                    f"status={result.get('status', '')}, error={result.get('error', '')}, "
+                    f"retry_after_seconds={retry_backoff}"
+                )
+                await asyncio.sleep(retry_backoff)
         if str(result.get("status") or "") == "todo_bridge_unavailable":
             result["status"] = "todo_bridge_retry_exhausted"
         status = str(result.get("status") or "todo_bridge_retry_exhausted")
         logger.warning(
             "Relay todo bridge exhausted: "
             f"conversation_id={record.conversation_id}, "
+            f"owner_bot={owner_bot}, peer_bot_id={normalized_peer_bot_id}, "
+            f"attempts={attempts}, "
             f"status={status}, "
             f"error={result.get('error', '')}"
         )

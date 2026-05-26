@@ -58,6 +58,7 @@ def _plugin() -> BotPrivateRelayPlugin:
 def _save_session(
     *,
     conversation_id: str = "conv-phase2",
+    peer_bot_id: str = "114514",
     state: str = "pending_reply",
     intent: str = "request",
     terminal: bool = False,
@@ -68,7 +69,7 @@ def _save_session(
 
     session = store.RelaySession(
         conversation_id=conversation_id,
-        peer_bot_id="114514",
+        peer_bot_id=peer_bot_id,
         channel="transaction",
         intent=intent,
         state=state,
@@ -92,13 +93,18 @@ def _save_session(
     return session
 
 
-def _execute_tool(tool_cls: type[Any], conversation_id: str = "conv-phase2") -> tuple[bool, dict[str, Any]]:
-    """Execute a transaction tool as the allowed responder."""
+def _execute_tool(
+    tool_cls: type[Any],
+    conversation_id: str = "conv-phase2",
+    *,
+    caller_bot: str = "114514",
+) -> tuple[bool, dict[str, Any]]:
+    """Execute a transaction tool as the requested responder."""
 
     return __import__("asyncio").run(
         tool_cls(_plugin()).execute(
             conversation_id=conversation_id,
-            caller_bot="114514",
+            caller_bot=caller_bot,
             reason="matrix test",
         )
     )
@@ -133,19 +139,30 @@ def test_phase2_transaction_tools_are_registered_and_relay_isolated() -> None:
 
 
 @pytest.mark.parametrize(
-    ("start_state", "tool_cls", "expected_intent", "expected_state", "expected_terminal", "expected_budget"),
+    (
+        "start_state",
+        "tool_cls",
+        "expected_intent",
+        "expected_state",
+        "expected_terminal",
+        "expected_budget",
+        "expected_allowed",
+        "expected_expect_reply",
+    ),
     [
-        ("pending_reply", DeclineTransactionTool, "decline", "closed", True, 0),
-        ("pending_reply", CancelTransactionTool, "cancel", "closed", True, 0),
-        ("pending_reply", RescheduleTransactionTool, "reschedule", "reschedule_requested", False, 2),
-        ("pending_reply", AckTransactionTool, "ack", "closed", True, 0),
-        ("pending_reply", CloseTransactionTool, "close", "closed", True, 0),
-        ("accepted", DeclineTransactionTool, "decline", "closed", True, 0),
-        ("accepted", CancelTransactionTool, "cancel", "closed", True, 0),
-        ("reschedule_requested", AcceptTransactionTool, "accept", "accepted", False, 2),
-        ("reschedule_requested", DeclineTransactionTool, "decline", "closed", True, 0),
-        ("reschedule_requested", CancelTransactionTool, "cancel", "closed", True, 0),
-        ("reschedule_requested", CloseTransactionTool, "close", "closed", True, 0),
+        ("pending_reply", DeclineTransactionTool, "decline", "closed", True, 0, [], False),
+        ("pending_reply", CancelTransactionTool, "cancel", "closed", True, 0, [], False),
+        ("pending_reply", RescheduleTransactionTool, "reschedule", "reschedule_requested", False, 2, ["223123"], True),
+        ("pending_reply", AckTransactionTool, "ack", "closed", True, 0, [], False),
+        ("pending_reply", CloseTransactionTool, "close", "closed", True, 0, [], False),
+        ("accepted", DeclineTransactionTool, "decline", "closed", True, 0, [], False),
+        ("accepted", CancelTransactionTool, "cancel", "closed", True, 0, [], False),
+        ("accepted", RescheduleTransactionTool, "reschedule", "reschedule_requested", False, 2, ["223123"], True),
+        ("reschedule_requested", ConfirmTransactionTool, "confirm", "closed", True, 0, [], False),
+        ("reschedule_requested", DeclineTransactionTool, "decline", "closed", True, 0, [], False),
+        ("reschedule_requested", CancelTransactionTool, "cancel", "closed", True, 0, [], False),
+        ("reschedule_requested", CloseTransactionTool, "close", "closed", True, 0, [], False),
+        ("reschedule_requested", RescheduleTransactionTool, "reschedule", "reschedule_requested", False, 2, ["223123"], True),
     ],
 )
 def test_phase2_transaction_tools_cover_valid_state_matrix(
@@ -155,11 +172,13 @@ def test_phase2_transaction_tools_cover_valid_state_matrix(
     expected_state: str,
     expected_terminal: bool,
     expected_budget: int,
+    expected_allowed: list[str],
+    expected_expect_reply: bool,
 ) -> None:
     """The public tools should cover every Phase 2 non-P0 valid transition."""
 
     store.reset_state()
-    _save_session(state=start_state)
+    _save_session(state=start_state, peer_bot_id="223123", allowed_responders=["114514"])
 
     success, payload = _execute_tool(tool_cls)
 
@@ -172,6 +191,8 @@ def test_phase2_transaction_tools_cover_valid_state_matrix(
     assert session.state == expected_state
     assert session.terminal is expected_terminal
     assert session.reply_budget == expected_budget
+    assert session.allowed_responders == expected_allowed
+    assert session.expect_reply is expected_expect_reply
 
 
 def test_p0_request_invite_accept_confirm_lifecycle_stays_compatible() -> None:
@@ -179,13 +200,29 @@ def test_p0_request_invite_accept_confirm_lifecycle_stays_compatible() -> None:
 
     for initial_intent in ("request", "invite"):
         store.reset_state()
-        _save_session(conversation_id=f"conv-{initial_intent}", intent=initial_intent, state="pending_reply")
+        _save_session(
+            conversation_id=f"conv-{initial_intent}",
+            peer_bot_id="223123",
+            intent=initial_intent,
+            state="pending_reply",
+        )
 
         accepted, accept_payload = _execute_tool(AcceptTransactionTool, f"conv-{initial_intent}")
-        confirmed, confirm_payload = _execute_tool(ConfirmTransactionTool, f"conv-{initial_intent}")
-
         assert accepted is True
         assert accept_payload["state"] == "accepted"
+        assert store.SESSION_TABLE[f"conv-{initial_intent}"].allowed_responders == ["223123"]
+        assert store.SESSION_TABLE[f"conv-{initial_intent}"].expect_reply is True
+        assert store.SESSION_TABLE[f"conv-{initial_intent}"].terminal is False
+
+        rejected, rejected_payload = _execute_tool(ConfirmTransactionTool, f"conv-{initial_intent}")
+        confirmed, confirm_payload = _execute_tool(
+            ConfirmTransactionTool,
+            f"conv-{initial_intent}",
+            caller_bot="223123",
+        )
+
+        assert rejected is False
+        assert rejected_payload["status"] == "not_allowed_responder"
         assert confirmed is True
         assert confirm_payload["state"] == "closed"
         assert store.SESSION_TABLE[f"conv-{initial_intent}"].terminal is True
@@ -203,6 +240,7 @@ def test_p0_request_invite_accept_confirm_lifecycle_stays_compatible() -> None:
         ("conv-accepted-accept", "accepted", False, 3, ["114514"], AcceptTransactionTool, "114514", True, "state_not_allowed"),
         ("conv-closed-mutation", "closed", True, 3, ["114514"], CancelTransactionTool, "114514", True, "conversation_closed"),
         ("conv-wrong-responder", "pending_reply", False, 3, ["114514"], AcceptTransactionTool, "223123", True, "not_allowed_responder"),
+        ("conv-reschedule-accept", "reschedule_requested", False, 3, ["114514"], AcceptTransactionTool, "114514", True, "state_not_allowed"),
         ("conv-budget-zero", "pending_reply", False, 0, ["114514"], AcceptTransactionTool, "114514", True, "reply_budget_exhausted"),
         ("conv-terminal", "pending_reply", True, 3, ["114514"], AcceptTransactionTool, "114514", True, "conversation_closed"),
         ("conv-incomplete-payload", "pending_reply", False, 3, ["114514"], AcceptTransactionTool, "114514", False, "invalid_payload"),
@@ -269,15 +307,23 @@ def test_phase2_transaction_validation_rejects_empty_tool_payload() -> None:
 
 
 @pytest.mark.parametrize(
-    ("existing_state", "intent", "expected_state", "expected_terminal", "expected_budget"),
+    (
+        "existing_state",
+        "intent",
+        "expected_state",
+        "expected_terminal",
+        "expected_budget",
+        "expected_allowed",
+        "expected_expect_reply",
+    ),
     [
-        ("pending_reply", "accept", "accepted", False, 2),
-        ("pending_reply", "reschedule", "reschedule_requested", False, 2),
-        ("accepted", "confirm", "closed", True, 0),
-        ("pending_reply", "decline", "closed", True, 0),
-        ("accepted", "cancel", "closed", True, 0),
-        ("pending_reply", "ack", "closed", True, 0),
-        ("reschedule_requested", "close", "closed", True, 0),
+        ("pending_reply", "accept", "accepted", False, 2, ["223123"], True),
+        ("pending_reply", "reschedule", "reschedule_requested", False, 2, ["223123"], True),
+        ("accepted", "confirm", "closed", True, 0, [], False),
+        ("pending_reply", "decline", "closed", True, 0, [], False),
+        ("accepted", "cancel", "closed", True, 0, [], False),
+        ("pending_reply", "ack", "closed", True, 0, [], False),
+        ("reschedule_requested", "close", "closed", True, 0, [], False),
     ],
 )
 def test_inbound_transaction_sync_infers_phase2_intents(
@@ -286,11 +332,13 @@ def test_inbound_transaction_sync_infers_phase2_intents(
     expected_state: str,
     expected_terminal: bool,
     expected_budget: int,
+    expected_allowed: list[str],
+    expected_expect_reply: bool,
 ) -> None:
     """Inbound transaction envelopes without state should still sync Phase 2 intents."""
 
     store.reset_state()
-    _save_session(conversation_id=f"conv-inbound-{intent}", state=existing_state)
+    _save_session(conversation_id=f"conv-inbound-{intent}", state=existing_state, reply_budget=3)
 
     session = SessionManager().sync_inbound_transaction_session(
         RelayEnvelope(
@@ -303,10 +351,10 @@ def test_inbound_transaction_sync_infers_phase2_intents(
             channel="transaction",
             intent=intent,
             state=None,
-            terminal=False,
-            expect_reply=True,
-            reply_budget=2,
-            allowed_responders=["223123"],
+            terminal=True,
+            expect_reply=False,
+            reply_budget=99,
+            allowed_responders=["untrusted-bot"],
             payload={"text": f"inbound {intent}"},
         )
     )
@@ -316,6 +364,8 @@ def test_inbound_transaction_sync_infers_phase2_intents(
     assert session.state == expected_state
     assert session.terminal is expected_terminal
     assert session.reply_budget == expected_budget
+    assert session.allowed_responders == expected_allowed
+    assert session.expect_reply is expected_expect_reply
     assert store.TRANSACTION_LOG[f"conv-inbound-{intent}"].current_state == expected_state
 
 
@@ -349,7 +399,42 @@ def test_inbound_transaction_sync_ignores_conflicting_envelope_state() -> None:
     assert session.state == "accepted"
     assert session.terminal is False
     assert session.reply_budget == 2
+    assert session.allowed_responders == ["223123"]
+    assert session.expect_reply is True
     assert store.TRANSACTION_LOG["conv-inbound-conflict"].current_state == "accepted"
+
+
+def test_inbound_transaction_sync_preserves_original_record_summary() -> None:
+    """Inbound decisions must not replace the original transaction topic."""
+
+    store.reset_state()
+    _save_session(conversation_id="conv-record-stable", state="pending_reply")
+    original = store.TRANSACTION_LOG["conv-record-stable"]
+    original.topic = "四点钟一起吃饭吗?"
+    original.summary = "四点钟一起吃饭吗?"
+
+    SessionManager().sync_inbound_transaction_session(
+        RelayEnvelope(
+            conversation_id="conv-record-stable",
+            trace_id="trace-record-stable",
+            from_bot="114514",
+            from_bot_name="流光",
+            to_bot="223123",
+            to_bot_name="清风",
+            channel="transaction",
+            intent="accept",
+            state="closed",
+            terminal=True,
+            expect_reply=False,
+            reply_budget=99,
+            allowed_responders=["untrusted-bot"],
+            payload={"text": "我接受你的邀请，四点见。"},
+        )
+    )
+
+    record = store.TRANSACTION_LOG["conv-record-stable"]
+    assert record.topic == "四点钟一起吃饭吗?"
+    assert record.summary == "四点钟一起吃饭吗?"
 
 
 def test_inbound_transaction_sync_rejects_invalid_direct_confirm() -> None:

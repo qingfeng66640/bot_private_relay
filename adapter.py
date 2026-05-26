@@ -13,12 +13,14 @@ from src.app.plugin_system.base import BaseAdapter
 from src.kernel.concurrency import get_task_manager
 from src.kernel.logger import get_logger
 
+from . import store
 from .config import BotPrivateRelayConfig, PartnerSection
 from .envelope import RelayEnvelope
 from .policy import PolicyEngine
 from .presence import PresenceManager
 from .session import SessionManager
 from .system_handler import SystemChannelHandler
+from .todo_bridge import TodoBridge
 
 logger = get_logger("bot_private_relay_adapter")
 
@@ -399,13 +401,26 @@ class BotRelayAdapter(BaseAdapter):
             return None
         if relay_envelope.channel != "system" and not presence_manager.is_allowed(relay_envelope.from_bot):
             logger.warning(
-                f"Ignoring relay envelope from unknown partner bot: {relay_envelope.from_bot}"
+                "Rejecting relay envelope from unknown partner bot: "
+                f"from_bot={relay_envelope.from_bot}, conversation_id={relay_envelope.conversation_id}"
             )
+            store.audit(
+                "sender_not_allowed",
+                from_bot=relay_envelope.from_bot,
+                to_bot=relay_envelope.to_bot,
+                channel=relay_envelope.channel,
+                intent=relay_envelope.intent,
+                conversation_id=relay_envelope.conversation_id,
+            )
+            await self._publish_sender_not_allowed_error(relay_envelope)
             return None
         system_handler = SystemChannelHandler(presence_manager)
         if system_handler.handle(relay_envelope):
             return None
-        self._session_manager.sync_inbound_transaction_session(relay_envelope)
+        transaction_session = self._session_manager.sync_inbound_transaction_session(relay_envelope)
+        transaction_session = await self._auto_confirm_inbound_accept(relay_envelope, transaction_session)
+        if transaction_session is not None:
+            self._apply_session_state_to_envelope(relay_envelope, transaction_session)
         inbound_todo_result = await self._session_manager.publish_inbound_final_todo_decision(
             envelope=relay_envelope,
             local_bot_id=self.relay_config.relay.bot_id,
@@ -446,6 +461,165 @@ class BotRelayAdapter(BaseAdapter):
             ],
             raw_message=raw_dict,
         )
+
+    async def _publish_sender_not_allowed_error(self, inbound: RelayEnvelope) -> None:
+        """Send an explicit protocol error for rejected non-system envelopes."""
+
+        error_envelope = RelayEnvelope(
+            conversation_id=inbound.conversation_id,
+            trace_id=inbound.trace_id,
+            parent_message_id=inbound.message_id,
+            from_bot=self.relay_config.relay.bot_id,
+            from_bot_name=self.relay_config.relay.bot_name,
+            to_bot=inbound.from_bot,
+            to_bot_name=inbound.from_bot_name,
+            channel="system",
+            intent="error",
+            expect_reply=False,
+            reply_budget=0,
+            ttl=self.relay_config.relay.default_ttl,
+            terminal=True,
+            allowed_responders=[],
+            no_relay=True,
+            payload={
+                "code": "sender_not_allowed",
+                "text": "Sender bot is not allowed to contact this relay endpoint.",
+                "rejected_channel": inbound.channel,
+                "rejected_intent": inbound.intent,
+            },
+        )
+        try:
+            error_envelope.validate()
+            await self.publish_relay_envelope(error_envelope)
+        except Exception as exc:
+            logger.error(
+                "Failed to publish sender-not-allowed relay error: "
+                f"from_bot={inbound.from_bot}, conversation_id={inbound.conversation_id}, error={exc}",
+                exc_info=True,
+            )
+
+    async def _auto_confirm_inbound_accept(
+        self,
+        envelope: RelayEnvelope,
+        session: store.RelaySession | None,
+    ) -> store.RelaySession | None:
+        """Confirm an inbound accept only after local projection succeeds."""
+
+        local_bot_id = self.relay_config.relay.bot_id
+        if envelope.channel != "transaction" or envelope.intent != "accept":
+            return session
+        if session is None or session.state != "accepted" or session.terminal:
+            return session
+        if local_bot_id not in session.allowed_responders:
+            return session
+
+        ok, code, checked_session = self._session_manager.validate_transaction_action(
+            conversation_id=envelope.conversation_id,
+            action="confirm",
+            caller_bot=local_bot_id,
+            payload_complete=bool(envelope.conversation_id),
+        )
+        if not ok or checked_session is None:
+            logger.warning(
+                "Inbound accept auto-confirm rejected by validation: "
+                f"conversation_id={envelope.conversation_id}, status={code}"
+            )
+            return session
+
+        record = store.TRANSACTION_LOG.get(envelope.conversation_id)
+        if record is None:
+            logger.warning(
+                "Inbound accept auto-confirm skipped: transaction record missing, "
+                f"conversation_id={envelope.conversation_id}"
+            )
+            return session
+
+        confirm_envelope = self._build_auto_confirm_envelope(envelope)
+        try:
+            confirm_envelope.validate()
+        except Exception as exc:
+            logger.error(
+                "Inbound accept auto-confirm envelope invalid; not publishing confirm: "
+                f"conversation_id={envelope.conversation_id}, error={exc}",
+                exc_info=True,
+            )
+            return session
+
+        bridge_ok, bridge_status, bridge_result = await TodoBridge(self.relay_config).publish_final_decision(
+            record=record,
+            final_intent="confirm",
+            owner_bot=local_bot_id,
+            peer_bot_id=envelope.from_bot,
+        )
+        if not bridge_ok:
+            logger.warning(
+                "Inbound accept auto-confirm rejected by todo bridge; not publishing confirm: "
+                f"conversation_id={envelope.conversation_id}, status={bridge_status}, "
+                f"todo_uid={bridge_result.get('todo_uid', '')}"
+            )
+            return session
+
+        try:
+            confirmed_session = self._session_manager.apply_transaction_action(
+                conversation_id=envelope.conversation_id,
+                action="confirm",
+                caller_bot=local_bot_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Inbound accept auto-confirm failed while applying local state; not publishing confirm: "
+                f"conversation_id={envelope.conversation_id}, error={exc}",
+                exc_info=True,
+            )
+            return session
+
+        try:
+            await self.publish_relay_envelope(confirm_envelope)
+        except Exception as exc:
+            logger.error(
+                "Inbound accept auto-confirm publish failed after local confirm: "
+                f"conversation_id={envelope.conversation_id}, error={exc}",
+                exc_info=True,
+            )
+        else:
+            logger.info(
+                "Inbound accept auto-confirm published: "
+                f"conversation_id={envelope.conversation_id}, peer_bot_id={envelope.from_bot}, "
+                f"todo_bridge_status={bridge_status}"
+            )
+        return confirmed_session
+
+    def _build_auto_confirm_envelope(self, inbound: RelayEnvelope) -> RelayEnvelope:
+        """Build the outbound confirm envelope for an accepted transaction."""
+
+        return RelayEnvelope(
+            conversation_id=inbound.conversation_id,
+            trace_id=inbound.trace_id,
+            parent_message_id=inbound.message_id,
+            from_bot=self.relay_config.relay.bot_id,
+            from_bot_name=self.relay_config.relay.bot_name,
+            to_bot=inbound.from_bot,
+            to_bot_name=inbound.from_bot_name,
+            channel="transaction",
+            intent="confirm",
+            expect_reply=False,
+            reply_budget=0,
+            ttl=self.relay_config.relay.default_ttl,
+            terminal=True,
+            allowed_responders=[],
+            state="closed",
+            payload={"text": "已确认当前事务。"},
+        )
+
+    @staticmethod
+    def _apply_session_state_to_envelope(envelope: RelayEnvelope, session: store.RelaySession) -> None:
+        """Reflect locally applied session state in downstream relay_context."""
+
+        envelope.state = session.state
+        envelope.terminal = session.terminal
+        envelope.expect_reply = session.expect_reply
+        envelope.reply_budget = session.reply_budget
+        envelope.allowed_responders = list(session.allowed_responders)
 
     def _resolve_partner_from_message_envelope(self, envelope: MessageEnvelope) -> PartnerSection:
         """Resolve the routing partner from envelope metadata.

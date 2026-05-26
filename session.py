@@ -24,8 +24,19 @@ class SessionManager:
             "close": "closed",
             "cancel": "closed",
         },
-        "accepted": {"confirm": "closed", "decline": "closed", "cancel": "closed"},
-        "reschedule_requested": {"accept": "accepted", "decline": "closed", "close": "closed", "cancel": "closed"},
+        "accepted": {
+            "confirm": "closed",
+            "decline": "closed",
+            "cancel": "closed",
+            "reschedule": "reschedule_requested",
+        },
+        "reschedule_requested": {
+            "confirm": "closed",
+            "decline": "closed",
+            "close": "closed",
+            "cancel": "closed",
+            "reschedule": "reschedule_requested",
+        },
         "closed": {},
     }
     _SOCIAL_END_PHASES = {"ending", "closed"}
@@ -121,18 +132,24 @@ class SessionManager:
                 allowed_responders=list(envelope.allowed_responders),
             )
         )
-        store.save_transaction_record(
-            store.RelayTransactionRecord(
-                conversation_id=envelope.conversation_id,
-                trace_id=envelope.trace_id,
-                from_bot=from_bot,
-                to_bot=to_bot,
-                current_state=envelope.state or "",
-                final_intent=envelope.intent if envelope.terminal else None,
-                topic=text,
-                summary=text,
+        existing_record = store.TRANSACTION_LOG.get(envelope.conversation_id)
+        if existing_record is None or envelope.intent in {"request", "invite", "notify"}:
+            store.save_transaction_record(
+                store.RelayTransactionRecord(
+                    conversation_id=envelope.conversation_id,
+                    trace_id=envelope.trace_id,
+                    from_bot=from_bot,
+                    to_bot=to_bot,
+                    current_state=envelope.state or "",
+                    final_intent=envelope.intent if envelope.terminal else None,
+                    topic=text,
+                    summary=text,
+                )
             )
-        )
+        else:
+            existing_record.current_state = envelope.state or existing_record.current_state
+            existing_record.final_intent = envelope.intent if envelope.terminal else existing_record.final_intent
+            store.save_transaction_record(existing_record)
         return envelope
 
     def relay_context_from_envelope(self, envelope: RelayEnvelope) -> dict[str, object]:
@@ -168,8 +185,14 @@ class SessionManager:
             return existing
         state = next_state
         terminal = state == "closed"
-        expect_reply = False if terminal else envelope.expect_reply
-        reply_budget = 0 if terminal else envelope.reply_budget
+        previous_budget = existing.reply_budget if existing is not None else envelope.reply_budget
+        reply_budget = 0 if terminal else max(0, int(previous_budget) - 1)
+        allowed_responders = self._derive_inbound_allowed_responders(
+            state=state,
+            terminal=terminal,
+            local_bot_id=envelope.to_bot,
+        )
+        expect_reply = False if terminal else bool(allowed_responders and reply_budget > 0)
         session = store.RelaySession(
             conversation_id=envelope.conversation_id,
             peer_bot_id=envelope.from_bot,
@@ -179,10 +202,11 @@ class SessionManager:
             terminal=terminal,
             expect_reply=expect_reply,
             reply_budget=reply_budget,
-            allowed_responders=list(envelope.allowed_responders),
+            allowed_responders=allowed_responders,
             phase=envelope.phase,
         )
         store.save_session(session)
+        existing_record = store.TRANSACTION_LOG.get(envelope.conversation_id)
         store.save_transaction_record(
             store.RelayTransactionRecord(
                 conversation_id=envelope.conversation_id,
@@ -191,11 +215,26 @@ class SessionManager:
                 to_bot=envelope.to_bot,
                 current_state=state or "",
                 final_intent=envelope.intent if terminal else None,
-                topic=envelope.text,
-                summary=envelope.text,
+                topic=existing_record.topic if existing_record is not None else envelope.text,
+                summary=existing_record.summary if existing_record is not None else envelope.text,
             )
         )
         return session
+
+    @staticmethod
+    def _derive_inbound_allowed_responders(
+        *,
+        state: str,
+        terminal: bool,
+        local_bot_id: str,
+    ) -> list[str]:
+        """Derive trusted inbound responders from local state only."""
+
+        if terminal:
+            return []
+        if state in {"pending_reply", "accepted", "reschedule_requested"} and local_bot_id:
+            return [local_bot_id]
+        return []
 
     async def publish_inbound_final_todo_decision(
         self,
@@ -449,8 +488,13 @@ class SessionManager:
         session.state = next_state
         session.intent = action
         session.reply_budget = 0 if terminal else max(0, session.reply_budget - 1)
-        session.expect_reply = False if terminal else session.expect_reply
         session.terminal = terminal
+        if terminal:
+            session.expect_reply = False
+            session.allowed_responders = []
+        elif action in {"accept", "reschedule"}:
+            session.expect_reply = True
+            session.allowed_responders = [session.peer_bot_id]
         store.save_session(session)
         record = store.TRANSACTION_LOG.get(conversation_id)
         if record is not None:

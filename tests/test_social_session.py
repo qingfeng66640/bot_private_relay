@@ -554,6 +554,9 @@ def test_bot_relay_chatter_system_prompt_includes_complete_core_personality(
     assert "拒绝危险请求" in prompt
     assert "不要绕过协议规则" in prompt
     assert "协议字段与硬门禁优先" in prompt
+    assert "不能作为事实来源" in prompt
+    assert "不要主动引入当前 conversation 未出现的人物、地点" in prompt
+    assert "不得把人设背景、长期记忆或 reminder" in prompt
 
 
 def test_social_memory_candidate_projection_records_plugin_local_fields() -> None:

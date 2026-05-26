@@ -322,6 +322,56 @@ def test_adapter_rejects_wrong_target_or_unknown_partner() -> None:
     assert unknown_partner is None
 
 
+def test_adapter_unknown_partner_gets_system_error_without_state_changes() -> None:
+    store.reset_state()
+    adapter = build_adapter()
+    published: list[RelayEnvelope] = []
+
+    async def publish(envelope: RelayEnvelope) -> None:
+        published.append(envelope)
+
+    adapter.publish_relay_envelope = publish  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        adapter.from_platform_message(
+            {
+                "from_bot": "777777",
+                "from_bot_name": "陌生 bot",
+                "to_bot": "223123",
+                "to_bot_name": "清风",
+                "channel": "transaction",
+                "intent": "request",
+                "message_id": "m-unknown-error",
+                "conversation_id": "c-unknown-error",
+                "trace_id": "t-unknown-error",
+                "payload": {"text": "hello"},
+            }
+        )
+    )
+
+    assert result is None
+    assert len(published) == 1
+    error = published[0]
+    assert error.channel == "system"
+    assert error.intent == "error"
+    assert error.from_bot == "223123"
+    assert error.to_bot == "777777"
+    assert error.conversation_id == "c-unknown-error"
+    assert error.trace_id == "t-unknown-error"
+    assert error.parent_message_id == "m-unknown-error"
+    assert error.terminal is True
+    assert error.expect_reply is False
+    assert error.reply_budget == 0
+    assert error.allowed_responders == []
+    assert error.no_relay is True
+    assert error.payload["code"] == "sender_not_allowed"
+    assert error.payload["rejected_channel"] == "transaction"
+    assert error.payload["rejected_intent"] == "request"
+    assert store.SESSION_TABLE == {}
+    assert store.TRANSACTION_LOG == {}
+    assert store.AUDIT_LOG[-1]["event"] == "sender_not_allowed"
+
+
 def test_adapter_accepts_allowed_partner_and_returns_message_envelope() -> None:
     store.reset_state()
     adapter = build_adapter()
@@ -635,6 +685,69 @@ def test_bot_relay_context_summary_warns_when_no_reply_expected() -> None:
     assert "当前协议不期待你自动继续回复" in extra
 
 
+def test_bot_relay_user_prompt_filters_history_to_current_conversation(monkeypatch: Any) -> None:
+    """Relay LLM history must not leak previous transaction blocks for the same peer."""
+
+    _stub_core_personality(monkeypatch)
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+
+    def msg(message_id: str, text: str, conversation_id: str) -> Any:
+        return type(
+            "Msg",
+            (),
+            {
+                "message_id": message_id,
+                "processed_plain_text": text,
+                "content": text,
+                "sender_id": "114514",
+                "sender_name": "流光",
+                "sender_role": "bot",
+                "sender_cardname": "",
+                "time": 0,
+                "extra": {"relay_context": {"conversation_id": conversation_id}},
+            },
+        )()
+
+    stream = type(
+        "Stream",
+        (),
+        {
+            "context": type(
+                "Context",
+                (),
+                {
+                    "history_messages": [
+                        msg("m-old", "old dinner at four beside the garden", "conv-old"),
+                        msg("m-current", "current water plan", "conv-current"),
+                    ]
+                },
+            )()
+        },
+    )()
+
+    prompt = chatter._build_user_prompt(
+        stream,
+        "new confirm message",
+        {
+            "conversation_id": "conv-current",
+            "peer_bot_id": "114514",
+            "peer_bot_name": "流光",
+            "channel": "transaction",
+            "intent": "accept",
+            "state": "accepted",
+            "expect_reply": True,
+            "reply_budget": 1,
+            "terminal": False,
+            "allowed_responders": ["223123"],
+        },
+    )
+
+    assert "current water plan" in prompt
+    assert "new confirm message" in prompt
+    assert "old dinner at four beside the garden" not in prompt
+
+
 def test_bot_relay_chatter_waits_when_context_does_not_expect_reply() -> None:
     assert BotRelayChatter._should_respond({"expect_reply": False}, "223123") is False
     assert BotRelayChatter._should_respond({"expect_reply": True, "terminal": True}, "223123") is False
@@ -890,6 +1003,138 @@ def test_bot_relay_chatter_runs_explicit_send_text_followup_after_transaction_to
     assert sent == []
 
 
+def test_bot_relay_chatter_sends_protocol_fallback_when_followup_waits_after_transaction_tool(
+    monkeypatch: Any,
+) -> None:
+    """A transaction tool must still notify the peer if follow-up chooses to wait."""
+
+    _stub_core_personality(monkeypatch)
+
+    class FollowResponse:
+        message = ""
+        call_list = [SimpleNamespace(name="action-pass_and_wait")]
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+    class InitialResponse:
+        message = ""
+        call_list = [
+            SimpleNamespace(
+                name="tool-accept_transaction",
+                args={"conversation_id": "conv-fallback", "caller_bot": "223123"},
+            )
+        ]
+
+        def __init__(self) -> None:
+            self.followup_stream_modes = []
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+        async def send(self, auto_append_response=True, stream=True):
+            self.followup_stream_modes.append(stream)
+            return FollowResponse()
+
+    class FakeRequest:
+        def __init__(self, initial: InitialResponse) -> None:
+            self.initial = initial
+            self.payloads = []
+            self.stream_modes = []
+
+        def add_payload(self, payload):
+            self.payloads.append(payload)
+            return self
+
+        async def send(self, stream=True):
+            self.stream_modes.append(stream)
+            return self.initial
+
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    sent: list[dict[str, Any]] = []
+    tool_calls: list[list[str]] = []
+    initial = InitialResponse()
+    fake_request = FakeRequest(initial)
+
+    def create_request(*args, **kwargs):
+        return fake_request
+
+    async def inject_usables(request):
+        return object()
+
+    async def run_tool_call(calls, response, usable_map, trigger_msg):
+        tool_calls.append([getattr(call, "name", "") for call in calls])
+        return [(True, True) for _call in calls]
+
+    async def exec_llm_usable(usable_cls, message, **kwargs):
+        sent.append({"message": message, "kwargs": kwargs})
+        return True, {"status": "sent"}
+
+    chatter.create_request = create_request  # type: ignore[method-assign]
+    chatter.inject_usables = inject_usables  # type: ignore[method-assign]
+    chatter.run_tool_call = run_tool_call  # type: ignore[method-assign]
+    chatter.exec_llm_usable = exec_llm_usable  # type: ignore[method-assign]
+
+    unread = type(
+        "Msg",
+        (),
+        {
+            "message_id": "m-tool-fallback",
+            "extra": {"relay_context": {"expect_reply": True}},
+            "processed_plain_text": "please accept this transaction",
+            "content": "please accept this transaction",
+            "sender_id": "114514",
+            "sender_name": "流光",
+            "sender_role": "bot",
+            "sender_cardname": "",
+            "time": 0,
+        },
+    )()
+    stream = type(
+        "Stream",
+        (),
+        {"context": type("Context", (), {"history_messages": []})()},
+    )()
+
+    result = __import__("asyncio").run(
+        chatter._run_relay_turn(
+            chat_stream=stream,
+            unread_text="please accept this transaction",
+            unread_messages=[unread],
+            relay_context={
+                "conversation_id": "conv-fallback",
+                "peer_bot_id": "114514",
+                "peer_bot_name": "流光",
+                "channel": "transaction",
+                "intent": "request",
+                "state": "pending_reply",
+                "expect_reply": True,
+                "reply_budget": 3,
+                "terminal": False,
+                "allowed_responders": ["223123"],
+            },
+        )
+    )
+
+    assert isinstance(result, Success)
+    assert fake_request.stream_modes == [False]
+    assert initial.followup_stream_modes == [False]
+    assert tool_calls == [["tool-accept_transaction"], ["action-pass_and_wait"]]
+    assert sent == [
+        {
+            "message": unread,
+            "kwargs": {"content": "已接下这个事务，等待你的最终确认。"},
+        }
+    ]
+
+
 def test_bot_relay_chatter_does_not_followup_after_initial_send_text_action(monkeypatch: Any) -> None:
     """An initial send_text action already is the social reply for this turn."""
 
@@ -995,6 +1240,207 @@ def test_bot_relay_chatter_does_not_followup_after_initial_send_text_action(monk
     assert tool_calls[0]["trigger_msg"] is unread
 
 
+def test_bot_relay_chatter_retries_incomplete_transaction_send_text(monkeypatch: Any) -> None:
+    """A non-terminal transaction cannot be answered with send_text alone."""
+
+    _stub_core_personality(monkeypatch)
+
+    class SendTextCall:
+        name = "action-send_text"
+
+    class ConfirmCall:
+        name = "tool-confirm_transaction"
+        args = {}
+
+    class FirstResponse:
+        message = ""
+        call_list = [SendTextCall()]
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+    class RetryResponse:
+        message = ""
+        call_list = [ConfirmCall(), SendTextCall()]
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.payloads = []
+            self.stream_modes = []
+            self.responses = [FirstResponse(), RetryResponse()]
+
+        def add_payload(self, payload):
+            self.payloads.append(payload)
+            return self
+
+        async def send(self, stream=True):
+            self.stream_modes.append(stream)
+            return self.responses.pop(0)
+
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    fake_request = FakeRequest()
+    tool_calls: list[list[str]] = []
+
+    def create_request(*args, **kwargs):
+        return fake_request
+
+    async def inject_usables(request):
+        return object()
+
+    async def run_tool_call(calls, response, usable_map, trigger_msg):
+        tool_calls.append([getattr(call, "name", "") for call in calls])
+        return [(True, True)]
+
+    chatter.create_request = create_request  # type: ignore[method-assign]
+    chatter.inject_usables = inject_usables  # type: ignore[method-assign]
+    chatter.run_tool_call = run_tool_call  # type: ignore[method-assign]
+
+    unread = type(
+        "Msg",
+        (),
+        {
+            "message_id": "m-incomplete",
+            "extra": {"relay_context": {"expect_reply": True}},
+            "processed_plain_text": "我接受你的邀请。",
+            "content": "我接受你的邀请。",
+            "sender_id": "114514",
+            "sender_name": "流光",
+            "sender_role": "bot",
+            "sender_cardname": "",
+            "time": 0,
+        },
+    )()
+    stream = type("Stream", (), {"context": type("Context", (), {"history_messages": []})()})()
+
+    result = asyncio.run(
+        chatter._run_relay_turn(
+            chat_stream=stream,
+            unread_text="我接受你的邀请。",
+            unread_messages=[unread],
+            relay_context={
+                "conversation_id": "conv-incomplete",
+                "peer_bot_id": "114514",
+                "peer_bot_name": "流光",
+                "channel": "transaction",
+                "intent": "accept",
+                "state": "accepted",
+                "expect_reply": True,
+                "reply_budget": 2,
+                "terminal": False,
+                "allowed_responders": ["223123"],
+            },
+        )
+    )
+
+    assert isinstance(result, Success)
+    assert fake_request.stream_modes == [False, False]
+    assert tool_calls == [["tool-confirm_transaction", "action-send_text"]]
+    retry_prompt_texts = [str(payload.content[0].text) for payload in fake_request.payloads if payload.role == "system"]
+    assert any("上一轮只调用了 send_text" in text for text in retry_prompt_texts)
+
+
+def test_bot_relay_chatter_drops_repeated_incomplete_transaction_send_text(monkeypatch: Any) -> None:
+    """If retry still omits a transaction tool, no send_text should be sent."""
+
+    _stub_core_personality(monkeypatch)
+
+    class SendTextCall:
+        name = "action-send_text"
+
+    class FakeResponse:
+        message = ""
+        call_list = [SendTextCall()]
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.payloads = []
+            self.stream_modes = []
+
+        def add_payload(self, payload):
+            self.payloads.append(payload)
+            return self
+
+        async def send(self, stream=True):
+            self.stream_modes.append(stream)
+            return FakeResponse()
+
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    fake_request = FakeRequest()
+    tool_calls: list[list[str]] = []
+
+    def create_request(*args, **kwargs):
+        return fake_request
+
+    async def inject_usables(request):
+        return object()
+
+    async def run_tool_call(calls, response, usable_map, trigger_msg):
+        tool_calls.append([getattr(call, "name", "") for call in calls])
+        return [(True, True)]
+
+    chatter.create_request = create_request  # type: ignore[method-assign]
+    chatter.inject_usables = inject_usables  # type: ignore[method-assign]
+    chatter.run_tool_call = run_tool_call  # type: ignore[method-assign]
+
+    unread = type(
+        "Msg",
+        (),
+        {
+            "message_id": "m-incomplete-repeat",
+            "extra": {"relay_context": {"expect_reply": True}},
+            "processed_plain_text": "可以。",
+            "content": "可以。",
+            "sender_id": "114514",
+            "sender_name": "流光",
+            "sender_role": "bot",
+            "sender_cardname": "",
+            "time": 0,
+        },
+    )()
+    stream = type("Stream", (), {"context": type("Context", (), {"history_messages": []})()})()
+
+    result = asyncio.run(
+        chatter._run_relay_turn(
+            chat_stream=stream,
+            unread_text="可以。",
+            unread_messages=[unread],
+            relay_context={
+                "conversation_id": "conv-incomplete-repeat",
+                "peer_bot_id": "114514",
+                "peer_bot_name": "流光",
+                "channel": "transaction",
+                "intent": "request",
+                "state": "pending_reply",
+                "expect_reply": True,
+                "reply_budget": 3,
+                "terminal": False,
+                "allowed_responders": ["223123"],
+            },
+        )
+    )
+
+    assert isinstance(result, Success)
+    assert fake_request.stream_modes == [False, False]
+    assert tool_calls == []
+
+
 def test_bot_relay_chatter_suppresses_bare_followup_text_after_tool_call() -> None:
     """Bare follow-up text after tool calls is internal status, not relay content."""
 
@@ -1046,6 +1492,72 @@ def test_bot_relay_chatter_suppresses_bare_followup_text_after_tool_call() -> No
     assert isinstance(result, Success)
     assert response.followup_stream_modes == [False]
     assert sent == []
+
+
+def test_bot_relay_chatter_sends_transaction_followup_text_to_peer() -> None:
+    """Human-facing follow-up text after a transaction tool is a relay reply."""
+
+    class FollowResponse:
+        message = "已接下这个计划，等待你的最终确认。"
+        call_list = []
+
+        def __await__(self):
+            async def _collect():
+                return self.message
+
+            return _collect().__await__()
+
+    class InitialResponse:
+        def __init__(self) -> None:
+            self.followup_stream_modes = []
+
+        async def send(self, auto_append_response=True, stream=True):
+            self.followup_stream_modes.append(stream)
+            return FollowResponse()
+
+    plugin = BotPrivateRelayPlugin(build_config())
+    chatter = BotRelayChatter(stream_id="s1", plugin=plugin)
+    sent: list[dict[str, Any]] = []
+    response = InitialResponse()
+
+    async def exec_llm_usable(usable_cls, message, **kwargs):
+        sent.append({"message": message, "kwargs": kwargs})
+        return True, {"status": "sent"}
+
+    chatter.exec_llm_usable = exec_llm_usable  # type: ignore[method-assign]
+    trigger = type(
+        "Msg",
+        (),
+        {
+            "message_id": "m-followup-send",
+            "extra": {"relay_context": {"expect_reply": True}},
+        },
+    )()
+
+    result = __import__("asyncio").run(
+        chatter._run_followup_after_tools(
+            response=response,
+            tool_registry=object(),
+            trigger_message=trigger,
+            relay_context={
+                "conversation_id": "conv-followup-send",
+                "channel": "transaction",
+                "state": "pending_reply",
+                "terminal": False,
+                "expect_reply": True,
+                "reply_budget": 1,
+            },
+        )
+    )
+
+    assert isinstance(result, Success)
+    assert response.followup_stream_modes == [False]
+    assert sent == [
+        {
+            "message": trigger,
+            "kwargs": {"content": "已接下这个计划，等待你的最终确认。"},
+        }
+    ]
 
 
 def test_bot_relay_chatter_hardens_transaction_tool_args(monkeypatch: Any) -> None:
@@ -1629,6 +2141,166 @@ def test_adapter_publishes_local_todo_projection_on_inbound_confirm() -> None:
     assert observed[0]["source_stream_id"] == "bot_relay:223123"
 
 
+def test_adapter_auto_confirms_inbound_accept_after_local_todo_projection() -> None:
+    store.reset_state()
+    from src.kernel.event import EventDecision, get_event_bus
+
+    observed: list[dict[str, Any]] = []
+
+    async def handler(_event_name: str, params: dict[str, Any]):
+        observed.append(dict(params["payload"]))
+        params["result"].update({"ok": True, "todo_uid": "auto-todo", "status": "created", "error": ""})
+        return EventDecision.SUCCESS, params
+
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-inbound-accept",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="request",
+            state="pending_reply",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=3,
+            allowed_responders=["114514"],
+        )
+    )
+    store.save_transaction_record(
+        store.RelayTransactionRecord(
+            conversation_id="conv-inbound-accept",
+            trace_id="trace-inbound-accept",
+            from_bot="223123",
+            to_bot="114514",
+            current_state="pending_reply",
+            topic="四点钟一起吃饭吗?",
+            summary="四点钟一起吃饭吗?",
+        )
+    )
+    adapter = build_adapter()
+    published: list[RelayEnvelope] = []
+
+    async def publish(envelope: RelayEnvelope) -> None:
+        published.append(envelope)
+
+    adapter.publish_relay_envelope = publish  # type: ignore[method-assign]
+    unsubscribe = get_event_bus().subscribe("bot_relay.todo_decided", handler)
+    try:
+        envelope = asyncio.run(
+            adapter.from_platform_message(
+                {
+                    "from_bot": "114514",
+                    "from_bot_name": "流光",
+                    "to_bot": "223123",
+                    "to_bot_name": "清风",
+                    "channel": "transaction",
+                    "intent": "accept",
+                    "expect_reply": False,
+                    "reply_budget": 99,
+                    "terminal": True,
+                    "allowed_responders": ["untrusted-bot"],
+                    "hop": 0,
+                    "ttl": 4,
+                    "message_id": "m-inbound-accept",
+                    "conversation_id": "conv-inbound-accept",
+                    "trace_id": "trace-inbound-accept",
+                    "payload": {"text": "我接受你的邀请，四点见。"},
+                }
+            )
+        )
+    finally:
+        unsubscribe()
+
+    assert envelope is not None
+    assert observed
+    assert observed[0]["conversation_id"] == "conv-inbound-accept"
+    assert observed[0]["owner_bot"] == "223123"
+    assert observed[0]["peer_bot_id"] == "114514"
+    assert len(published) == 1
+    assert published[0].intent == "confirm"
+    assert published[0].state == "closed"
+    assert published[0].terminal is True
+    assert published[0].allowed_responders == []
+    assert published[0].text == "已确认当前事务。"
+    assert published[0].text != "我接受你的邀请，四点见。"
+    assert store.SESSION_TABLE["conv-inbound-accept"].state == "closed"
+    extra = envelope["message_info"]["extra"]
+    assert extra["relay_context"]["state"] == "closed"
+    assert extra["relay_context"]["terminal"] is True
+    assert extra["relay_context"]["expect_reply"] is False
+
+
+def test_adapter_auto_confirm_failure_does_not_publish_confirm_envelope() -> None:
+    store.reset_state()
+    from src.kernel.event import EventDecision, get_event_bus
+
+    async def handler(_event_name: str, params: dict[str, Any]):
+        params["result"].update({"ok": False, "todo_uid": "", "status": "todo_bridge_failed", "error": "boom"})
+        return EventDecision.SUCCESS, params
+
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-auto-fail",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="request",
+            state="pending_reply",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=3,
+            allowed_responders=["114514"],
+        )
+    )
+    store.save_transaction_record(
+        store.RelayTransactionRecord(
+            conversation_id="conv-auto-fail",
+            trace_id="trace-auto-fail",
+            from_bot="223123",
+            to_bot="114514",
+            current_state="pending_reply",
+            topic="四点钟一起吃饭吗?",
+            summary="四点钟一起吃饭吗?",
+        )
+    )
+    adapter = build_adapter()
+    adapter.relay_config.todo_bridge.max_retries = 0
+    published: list[RelayEnvelope] = []
+
+    async def publish(envelope: RelayEnvelope) -> None:
+        published.append(envelope)
+
+    adapter.publish_relay_envelope = publish  # type: ignore[method-assign]
+    unsubscribe = get_event_bus().subscribe("bot_relay.todo_decided", handler)
+    try:
+        asyncio.run(
+            adapter.from_platform_message(
+                {
+                    "from_bot": "114514",
+                    "from_bot_name": "流光",
+                    "to_bot": "223123",
+                    "to_bot_name": "清风",
+                    "channel": "transaction",
+                    "intent": "accept",
+                    "expect_reply": False,
+                    "reply_budget": 99,
+                    "terminal": True,
+                    "allowed_responders": ["untrusted-bot"],
+                    "hop": 0,
+                    "ttl": 4,
+                    "message_id": "m-auto-fail",
+                    "conversation_id": "conv-auto-fail",
+                    "trace_id": "trace-auto-fail",
+                    "payload": {"text": "我接受你的邀请，四点见。"},
+                }
+            )
+        )
+    finally:
+        unsubscribe()
+
+    assert published == []
+    assert store.SESSION_TABLE["conv-auto-fail"].state == "accepted"
+    assert store.SESSION_TABLE["conv-auto-fail"].terminal is False
+
+
 def test_validate_transaction_action_error_codes_match_plan_enum() -> None:
     """The six error codes must match plan §8 Phase 2 enumeration exactly."""
     store.reset_state()
@@ -1751,6 +2423,55 @@ def test_outbound_envelope_can_infer_accept_from_session_state() -> None:
     assert envelope.state == "accepted"
     assert envelope.terminal is False
     assert envelope.expect_reply is True
+
+
+def test_outbound_accept_does_not_overwrite_initial_transaction_summary() -> None:
+    store.reset_state()
+    store.save_session(
+        store.RelaySession(
+            conversation_id="conv-accept-summary",
+            peer_bot_id="114514",
+            channel="transaction",
+            intent="accept",
+            state="accepted",
+            terminal=False,
+            expect_reply=True,
+            reply_budget=2,
+            allowed_responders=["114514"],
+        )
+    )
+    store.save_transaction_record(
+        store.RelayTransactionRecord(
+            conversation_id="conv-accept-summary",
+            trace_id="trace-original",
+            from_bot="114514",
+            to_bot="223123",
+            current_state="pending_reply",
+            topic="一分钟后提醒喝水",
+            summary="一分钟后提醒喝水",
+        )
+    )
+
+    envelope = SessionManager().build_outbound_envelope(
+        message_envelope={
+            "message_info": {
+                "platform": "bot_relay",
+                "user_info": {"user_id": "114514", "user_nickname": "流光"},
+                "extra": {"relay_context": {"conversation_id": "conv-accept-summary", "peer_bot_id": "114514"}},
+            },
+            "message_segment": [{"type": "text", "data": "我接受这个计划，等待你确认。"}],
+        },
+        from_bot="223123",
+        from_bot_name="清风",
+        to_bot="114514",
+        to_bot_name="流光",
+    )
+
+    assert envelope.intent == "accept"
+    record = store.TRANSACTION_LOG["conv-accept-summary"]
+    assert record.summary == "一分钟后提醒喝水"
+    assert record.topic == "一分钟后提醒喝水"
+    assert record.summary != envelope.text
 
 
 def test_outbound_envelope_can_infer_confirm_from_closed_session_intent() -> None:

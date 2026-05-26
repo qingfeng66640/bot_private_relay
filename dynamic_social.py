@@ -86,6 +86,8 @@ class RelaySocialContactTool(BaseTool):
         target_bot_id: Annotated[str, "目标 bot_id"],
         message: Annotated[str, "要通过社交链路发送给对端 bot 的自然语言消息"],
         reason: Annotated[str, "主动联系原因，例如 todo_execution、event、impulse"] = "todo_execution",
+        conversation_id: Annotated[str, "可选：沿用来源 relay 事务的 conversation_id"] = "",
+        trace_id: Annotated[str, "可选：沿用来源 relay 事务的 trace_id"] = "",
     ) -> tuple[bool, str]:
         """Send a proactive social message to a target bot."""
 
@@ -116,7 +118,8 @@ class RelaySocialContactTool(BaseTool):
             "intent": "say",
             "peer_bot_id": target_bot_id,
             "peer_bot_name": partner_name,
-            "conversation_id": uuid4().hex,
+            "conversation_id": conversation_id.strip() or uuid4().hex,
+            "trace_id": trace_id.strip(),
             "phase": "opening",
             "terminal": False,
             "expect_reply": True,

@@ -48,6 +48,15 @@ class BotRelayChatter(BaseChatter):
         "bot_private_relay:tool:ack_transaction",
         "bot_private_relay:tool:close_transaction",
     }
+    _TRANSACTION_TOOL_NAMES = {
+        "tool-accept_transaction",
+        "tool-confirm_transaction",
+        "tool-decline_transaction",
+        "tool-cancel_transaction",
+        "tool-reschedule_transaction",
+        "tool-ack_transaction",
+        "tool-close_transaction",
+    }
 
     _RELAY_SYSTEM_GUIDANCE = """
 你当前处理的是 bot 与 bot 之间的私有中继对话，而不是面对普通用户的公开聊天。
@@ -59,12 +68,15 @@ class BotRelayChatter(BaseChatter):
 4. transaction.notify 是单向通知；transaction.request 才表示对端期待你协作或回应。
 5. 若当前消息属于事务上下文，请优先遵守事务状态、意图、预算和终态约束。
 6. 调用 accept_transaction / confirm_transaction / decline_transaction / cancel_transaction / reschedule_transaction / ack_transaction / close_transaction 时，caller_bot 必须填写本机 bot_id。
-7. 事务状态为 pending_reply 时，先调用 accept_transaction 表示接下事务；不要从 pending_reply 直接调用 confirm_transaction。
-8. accept_transaction 只表示接下事务，不会写入 todo；如果你已经给出最终承诺、任务已完成，或当前事务已经可以沉淀为 bot 计划，必须在 accepted 状态继续调用 confirm_transaction。
-9. 事务状态为 accepted 时，只有在事务已完成并应关闭时才调用 confirm_transaction；confirm_transaction 会直接进入 closed 终态，并触发 todo bridge。
-10. reschedule_transaction 只能在 pending_reply 时提出改期，进入 reschedule_requested；该状态可再 accept / decline / cancel / close。
-11. ack_transaction 和 close_transaction 会关闭事务；只在无需继续协作或需要收束时使用。
-12. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
+7. transaction channel 且事务未关闭时，如果要发送文本，必须同时调用一个事务 tool 表示协议动作；不要只用 send_text 表达接受、确认、拒绝、取消或改期。
+8. 事务状态为 pending_reply 时，先调用 accept_transaction 表示接下事务；不要从 pending_reply 直接调用 confirm_transaction。
+9. accept_transaction 只表示接下原提案，不会写入 todo；accept 后由对端最终 confirm。
+10. 事务状态为 accepted 时，只有当前 bot 是 allowed_responders 时才调用 confirm_transaction；confirm_transaction 会直接进入 closed 终态，并触发 todo bridge。
+11. reschedule_transaction 表示提出替代方案，进入 reschedule_requested；对端若接受当前改期方案，应直接调用 confirm_transaction。
+12. ack_transaction 和 close_transaction 会关闭事务；只在无需继续协作或需要收束时使用。
+13. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
+14. 人设、记忆和 reminder 只能影响语气，不能作为事实来源；不要主动引入当前 conversation 未出现的人物、地点、宠物/道具、旧约定或背景设定。
+15. social 回复也必须围绕当前消息直接回应；若对端只是提醒或确认一件事，不要扩写邀约、见面地点、共同计划或角色设定。
 """.strip()
 
     @property
@@ -184,13 +196,22 @@ class BotRelayChatter(BaseChatter):
         if response.call_list:
             logger.info(f"BotRelayChatter executing tool calls: {call_names}")
             self._harden_transaction_tool_calls(response.call_list, relay_context)
-            await self.run_tool_call(
-                response.call_list,
+            if self._is_incomplete_transaction_send_text(call_names, relay_context):
+                return await self._retry_incomplete_transaction_action(
+                    request=request,
+                    tool_registry=tool_registry,
+                    trigger_message=unread_messages[-1] if unread_messages else None,
+                    relay_context=relay_context,
+                )
+            sorted_calls = self._sort_transaction_tool_calls(response.call_list, relay_context)
+            tool_results = await self.run_tool_call(
+                sorted_calls,
                 response,
                 tool_registry,
                 unread_messages[-1] if unread_messages else None,
             )
-            if not self._should_request_followup_after_tools(call_names):
+            sorted_call_names = [getattr(call, "name", "") for call in sorted_calls]
+            if not self._should_request_followup_after_tools(sorted_call_names):
                 logger.info("BotRelayChatter completed relay action turn without follow-up")
                 return Success("bot_relay_chatter completed relay action turn")
             logger.info("BotRelayChatter completed relay tool turn; requesting follow-up reply")
@@ -199,9 +220,23 @@ class BotRelayChatter(BaseChatter):
                 tool_registry=tool_registry,
                 trigger_message=unread_messages[-1] if unread_messages else None,
                 relay_context=relay_context,
+                initial_call_names=sorted_call_names,
+                initial_tool_results=tool_results,
             )
 
         if message_text:
+            if self._is_open_transaction(relay_context):
+                logger.warning(
+                    "BotRelayChatter suppressed bare transaction text without tool call: "
+                    f"conversation_id={relay_context.get('conversation_id')}, "
+                    f"state={relay_context.get('state')}, intent={relay_context.get('intent')}"
+                )
+                return await self._retry_incomplete_transaction_action(
+                    request=request,
+                    tool_registry=tool_registry,
+                    trigger_message=unread_messages[-1] if unread_messages else None,
+                    relay_context=relay_context,
+                )
             return await self._send_plain_text_response(message_text, unread_messages[-1])
 
         logger.info("BotRelayChatter LLM produced no text and no tool calls; nothing to send")
@@ -220,6 +255,8 @@ class BotRelayChatter(BaseChatter):
         tool_registry: Any,
         trigger_message: Message | None,
         relay_context: dict[str, Any] | None = None,
+        initial_call_names: list[str] | None = None,
+        initial_tool_results: list[tuple[bool, bool]] | None = None,
     ) -> ChatterResult:
         """Ask the LLM to turn tool results into an outbound relay reply."""
 
@@ -241,19 +278,213 @@ class BotRelayChatter(BaseChatter):
                 f"BotRelayChatter executing follow-up tool calls: {follow_call_names}"
             )
             self._harden_transaction_tool_calls(follow_response.call_list, relay_context or {})
-            await self.run_tool_call(
-                follow_response.call_list,
+            sorted_calls = self._sort_transaction_tool_calls(follow_response.call_list, relay_context or {})
+            sorted_call_names = [getattr(call, "name", "") for call in sorted_calls]
+            follow_results = await self.run_tool_call(
+                sorted_calls,
                 follow_response,
                 tool_registry,
                 trigger_message,
             )
+            fallback_text = self._protocol_fallback_text_after_transaction_tool(
+                initial_call_names or [],
+                initial_tool_results or [],
+                sorted_call_names,
+                relay_context or {},
+            )
+            if fallback_text and trigger_message is not None:
+                logger.warning(
+                    "BotRelayChatter sending protocol fallback after transaction tool follow-up: "
+                    f"conversation_id={relay_context.get('conversation_id') if relay_context else ''}, "
+                    f"initial_tool_calls={initial_call_names}, follow_tool_calls={sorted_call_names}, "
+                    f"follow_results={follow_results}"
+                )
+                return await self._send_plain_text_response(fallback_text, trigger_message)
             return Success("bot_relay_chatter completed follow-up tool turn")
 
         if follow_text:
+            if self._should_send_followup_text(relay_context or {}, follow_text) and trigger_message is not None:
+                return await self._send_plain_text_response(follow_text, trigger_message)
             logger.info("BotRelayChatter suppressed bare follow-up text after tool calls")
+
+        fallback_text = self._protocol_fallback_text_after_transaction_tool(
+            initial_call_names or [],
+            initial_tool_results or [],
+            [],
+            relay_context or {},
+        )
+        if fallback_text and trigger_message is not None:
+            logger.warning(
+                "BotRelayChatter sending protocol fallback after empty transaction follow-up: "
+                f"conversation_id={relay_context.get('conversation_id') if relay_context else ''}, "
+                f"initial_tool_calls={initial_call_names}"
+            )
+            return await self._send_plain_text_response(fallback_text, trigger_message)
 
         logger.info("BotRelayChatter follow-up produced no text and no tool calls")
         return Success("bot_relay_chatter completed relay tool turn without follow-up text")
+
+    @classmethod
+    def _protocol_fallback_text_after_transaction_tool(
+        cls,
+        initial_call_names: list[str],
+        initial_tool_results: list[tuple[bool, bool]],
+        follow_call_names: list[str],
+        relay_context: dict[str, Any],
+    ) -> str:
+        """Return fallback text when a transaction state change was not relayed."""
+
+        if not cls._is_open_transaction(relay_context):
+            return ""
+        if "action-send_text" in follow_call_names:
+            return ""
+        transaction_call = cls._successful_transaction_call(
+            initial_call_names,
+            initial_tool_results,
+        )
+        fallback_by_tool = {
+            "tool-accept_transaction": "已接下这个事务，等待你的最终确认。",
+            "tool-confirm_transaction": "已确认当前事务。",
+            "tool-decline_transaction": "已拒绝当前事务。",
+            "tool-cancel_transaction": "已取消当前事务。",
+            "tool-reschedule_transaction": "我想调整当前事务安排，请你确认新的方案。",
+            "tool-ack_transaction": "已收到并关闭当前事务。",
+            "tool-close_transaction": "已关闭当前事务。",
+        }
+        return fallback_by_tool.get(transaction_call, "")
+
+    @classmethod
+    def _successful_transaction_call(
+        cls,
+        call_names: list[str],
+        tool_results: list[tuple[bool, bool]],
+    ) -> str:
+        """Return the first transaction tool call that executed successfully."""
+
+        for index, name in enumerate(call_names):
+            if name not in cls._TRANSACTION_TOOL_NAMES:
+                continue
+            if index >= len(tool_results):
+                continue
+            _wrote_result, ok = tool_results[index]
+            if ok:
+                return name
+        return ""
+
+    @classmethod
+    def _should_send_followup_text(cls, relay_context: dict[str, Any], text: str) -> bool:
+        """Return whether tool follow-up text is outbound relay content."""
+
+        if not cls._is_open_transaction(relay_context):
+            return False
+        normalized = " ".join(text.strip().split())
+        if not normalized:
+            return False
+        internal_markers = (
+            "事务状态",
+            "已转为",
+            "tool",
+            "工具",
+            "内部",
+            "执行结果",
+            "状态=",
+            "state=",
+            "status=",
+        )
+        return not any(marker in normalized for marker in internal_markers)
+
+    async def _retry_incomplete_transaction_action(
+        self,
+        *,
+        request: Any,
+        tool_registry: Any,
+        trigger_message: Message | None,
+        relay_context: dict[str, Any],
+    ) -> ChatterResult:
+        """Retry once when an open transaction only produced plain text."""
+
+        logger.warning(
+            "BotRelayChatter retrying incomplete transaction action: "
+            f"conversation_id={relay_context.get('conversation_id')}, "
+            f"state={relay_context.get('state')}, intent={relay_context.get('intent')}, "
+            "call_names=['action-send_text']"
+        )
+        request.add_payload(
+            LLMPayload(
+                ROLE.SYSTEM,
+                [Text(self._build_incomplete_transaction_retry_prompt())],
+            )
+        )
+        retry_response = await self._send_relay_request(request)
+        await retry_response
+        retry_call_names = [getattr(call, "name", "") for call in retry_response.call_list or []]
+        logger.info(
+            "BotRelayChatter retry response: "
+            f"tool_calls={retry_call_names}, "
+            f"text_len={len((retry_response.message or '').strip())}"
+        )
+        if retry_response.call_list:
+            self._harden_transaction_tool_calls(retry_response.call_list, relay_context)
+            if self._is_incomplete_transaction_send_text(retry_call_names, relay_context):
+                logger.warning(
+                    "BotRelayChatter dropping repeated incomplete transaction send_text: "
+                    f"conversation_id={relay_context.get('conversation_id')}, "
+                    f"state={relay_context.get('state')}, intent={relay_context.get('intent')}"
+                )
+                return Success("bot_relay_chatter dropped incomplete transaction text")
+            sorted_calls = self._sort_transaction_tool_calls(retry_response.call_list, relay_context)
+            await self.run_tool_call(
+                sorted_calls,
+                retry_response,
+                tool_registry,
+                trigger_message,
+            )
+            return Success("bot_relay_chatter completed retried transaction tool turn")
+        retry_text = (retry_response.message or "").strip()
+        if retry_text:
+            logger.warning(
+                "BotRelayChatter dropping repeated bare transaction text: "
+                f"conversation_id={relay_context.get('conversation_id')}, "
+                f"state={relay_context.get('state')}, intent={relay_context.get('intent')}"
+            )
+        return Success("bot_relay_chatter completed retry without transaction tool")
+
+    @classmethod
+    def _is_incomplete_transaction_send_text(
+        cls,
+        call_names: list[str],
+        relay_context: dict[str, Any],
+    ) -> bool:
+        """Return whether an open transaction only tried to send text."""
+
+        if not cls._is_open_transaction(relay_context):
+            return False
+        return bool(call_names) and set(call_names) == {"action-send_text"}
+
+    @staticmethod
+    def _is_open_transaction(relay_context: dict[str, Any]) -> bool:
+        """Return whether the relay context is an unfinished transaction."""
+
+        return (
+            relay_context.get("channel") == "transaction"
+            and relay_context.get("terminal") is not True
+            and relay_context.get("state") in {"pending_reply", "accepted", "reschedule_requested"}
+        )
+
+    @classmethod
+    def _sort_transaction_tool_calls(
+        cls,
+        calls: list[Any],
+        relay_context: dict[str, Any],
+    ) -> list[Any]:
+        """Run transaction tools before send_text in the same relay turn."""
+
+        if relay_context.get("channel") != "transaction":
+            return calls
+        return sorted(
+            calls,
+            key=lambda call: 0 if getattr(call, "name", "") in cls._TRANSACTION_TOOL_NAMES else 1,
+        )
 
     def _harden_transaction_tool_calls(
         self,
@@ -266,18 +497,9 @@ class BotRelayChatter(BaseChatter):
         caller_bot = self.relay_config.relay.bot_id
         if not conversation_id:
             return
-        transaction_tools = {
-            "tool-accept_transaction",
-            "tool-confirm_transaction",
-            "tool-decline_transaction",
-            "tool-cancel_transaction",
-            "tool-reschedule_transaction",
-            "tool-ack_transaction",
-            "tool-close_transaction",
-        }
         for call in calls:
             name = getattr(call, "name", "")
-            if name not in transaction_tools:
+            if name not in self._TRANSACTION_TOOL_NAMES:
                 continue
             args = getattr(call, "args", None)
             if not isinstance(args, dict):
@@ -373,6 +595,7 @@ class BotRelayChatter(BaseChatter):
             [
                 "# 完整人设",
                 "以下人设只用于影响允许回复后的语气、身份表达和语言风格；协议字段与硬门禁优先。",
+                "不得把人设背景、长期记忆或 reminder 中的人物、地点、道具、旧约定当作当前事实主动加入回复。",
                 f"- nickname: {personality.nickname}",
                 f"- alias_names: {'、'.join(personality.alias_names)}",
                 f"- personality_core: {personality.personality_core}",
@@ -397,14 +620,17 @@ class BotRelayChatter(BaseChatter):
 
         history_lines = [
             self.format_message_line(message)
-            for message in chat_stream.context.history_messages[-8:]
+            for message in self._conversation_history_messages(
+                chat_stream.context.history_messages,
+                relay_context,
+            )[-8:]
         ]
         history = "\n".join(history_lines) or "（无历史消息）"
         unreads = unread_text or "（无新消息文本）"
         return "\n".join(
             [
                 "请基于以下 bot_private_relay 私有对话上下文完成一次回应。",
-                "若需要发送文本回复，必须调用 send_text action；若需要事务决策，优先调用对应事务 tool。",
+                "若需要发送文本回复，必须调用 send_text action；若当前是未关闭 transaction，发送文本时必须同时调用对应事务 tool。",
                 "",
                 "# 历史消息",
                 history,
@@ -415,6 +641,39 @@ class BotRelayChatter(BaseChatter):
                 "# relay_context 摘要",
                 self._format_relay_context(relay_context),
             ]
+        )
+
+    @staticmethod
+    def _conversation_history_messages(
+        messages: list[Message],
+        relay_context: dict[str, Any],
+    ) -> list[Message]:
+        """Return history from the same relay conversation block."""
+
+        conversation_id = str(relay_context.get("conversation_id") or "").strip()
+        if not conversation_id:
+            return messages
+        scoped_messages: list[Message] = []
+        for message in messages:
+            extra = getattr(message, "extra", None)
+            message_context = extra.get("relay_context") if isinstance(extra, dict) else None
+            message_conversation_id = ""
+            if isinstance(message_context, dict):
+                message_conversation_id = str(message_context.get("conversation_id") or "").strip()
+            if message_conversation_id == conversation_id:
+                scoped_messages.append(message)
+        return scoped_messages
+
+    @staticmethod
+    def _build_incomplete_transaction_retry_prompt() -> str:
+        """Build the retry-only instruction for incomplete transaction actions."""
+
+        return (
+            "上一轮只调用了 send_text，但当前 transaction 未关闭。"
+            "必须选择 accept_transaction / confirm_transaction / decline_transaction / "
+            "reschedule_transaction / cancel_transaction / close_transaction / "
+            "ack_transaction / pass_and_wait 之一。"
+            "如果要发文本，请同时调用对应事务 tool 和 send_text。"
         )
 
     @classmethod
