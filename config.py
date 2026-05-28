@@ -21,16 +21,16 @@ class PartnerSection(SectionBase):
     ``bot_name`` is display-only for prompts, logs, and history rendering.
     """
 
-    bot_id: str = Field(default="", description="Partner bot id used for routing")
-    bot_name: str = Field(default="", description="Partner display name")
+    bot_id: str = Field(default="", description="伙伴 bot 的路由 ID")
+    bot_name: str = Field(default="", description="伙伴 bot 的显示名称")
 
 
 class SocialQuotaSection(SectionBase):
     """Per-target proactive social quota."""
 
-    max_per_day: int = Field(default=5, description="Maximum proactive social contacts per day")
-    max_per_hour: int = Field(default=2, description="Maximum proactive social contacts per hour")
-    cooldown_seconds: int = Field(default=300, description="Cooldown between proactive social contacts")
+    max_per_day: int = Field(default=5, description="每天最多主动社交联系次数")
+    max_per_hour: int = Field(default=2, description="每小时最多主动社交联系次数")
+    cooldown_seconds: int = Field(default=300, description="主动社交联系冷却秒数")
 
 
 class BotPrivateRelayConfig(BaseConfig):
@@ -54,19 +54,20 @@ class BotPrivateRelayConfig(BaseConfig):
     """
 
     config_name: ClassVar[str] = "config"
-    config_description: ClassVar[str] = "Bot private relay configuration"
+    config_description: ClassVar[str] = "Bot 私有中继配置"
 
     @config_section("relay", title="Relay", tag="plugin")
     class RelaySection(SectionBase):
         """Relay identity and broker options."""
 
-        enabled: bool = Field(default=True, description="Enable bot private relay")
-        bot_id: str = Field(default="", description="This bot id; security-critical")
-        bot_name: str = Field(default="", description="This bot display name")
-        relay_url: str = Field(default="mqtt://localhost:1883", description="MQTT relay URL")
-        auth_token: str = Field(default="", description="Optional auth token")
-        default_ttl: int = Field(default=4, description="Default relay hop TTL")
-        default_reply_budget: int = Field(default=3, description="Default request reply budget")
+        enabled: bool = Field(default=True, description="启用 bot 私有中继")
+        bot_id: str = Field(default="", description="本 bot 的安全身份 ID")
+        bot_name: str = Field(default="", description="本 bot 的显示名称")
+        relay_url: str = Field(default="mqtt://localhost:1883", description="MQTT 中继地址")
+        auth_token: str = Field(default="", description="可选认证 token")
+        default_ttl: int = Field(default=4, description="默认中继跳数 TTL")
+        default_reply_budget: int = Field(default=3, description="默认请求回复预算")
+        show_system_message_logs: bool = Field(default=True, description="是否在日志中展示系统消息入站")
 
     @config_section("partners", title="Partners", tag="plugin")
     class PartnersSection(SectionBase):
@@ -78,31 +79,47 @@ class BotPrivateRelayConfig(BaseConfig):
     class PresenceSection(SectionBase):
         """Presence and allowlist settings."""
 
-        allowed_partner_bots: list[str] = Field(default_factory=list)
-        require_known_partner: bool = Field(default=True)
+        allowed_partner_bots: list[str] = Field(default_factory=list, description="允许通信的伙伴 bot_id 列表")
+        require_known_partner: bool = Field(default=True, description="是否要求对端必须在已知伙伴列表中")
 
     @config_section("todo_bridge", title="Todo Bridge", tag="plugin")
     class TodoBridgeSection(SectionBase):
         """Bridge confirmed relay transactions into todo_plugin."""
 
-        enabled: bool = Field(default=True, description="Publish confirmed relay transactions to todo_plugin")
-        event_name: str = Field(default="bot_relay.todo_decided", description="EventBus topic for relay todo decisions")
-        max_retries: int = Field(default=2, description="Retry count after the first bridge publish attempt")
-        retry_backoff_seconds: float = Field(default=0.1, description="Delay between bridge publish retries")
-        fail_transaction_on_unavailable: bool = Field(default=True, description="Fail confirm if todo bridge is unavailable")
+        enabled: bool = Field(default=True, description="启用事务确认后的 todo_plugin 桥接")
+        event_name: str = Field(default="bot_relay.todo_decided", description="relay todo 决策事件名")
+        max_retries: int = Field(default=2, description="首次发布失败后的重试次数")
+        retry_backoff_seconds: float = Field(default=0.1, description="桥接发布重试间隔秒数")
+        fail_transaction_on_unavailable: bool = Field(default=True, description="todo 桥接不可用时是否阻止事务确认")
 
     @config_section("dynamic_social", title="Dynamic Social", tag="plugin")
     class DynamicSocialSection(SectionBase):
         """Runtime quotas for proactive social contact."""
 
-        enabled: bool = Field(default=True, description="Enable proactive social contact quotas")
-        default_allow_all_bots: bool = Field(default=True, description="Allow contacting bots not listed as partners")
-        impulse_enabled: bool = Field(default=True, description="Allow impulse-triggered proactive social contact")
-        event_triggers_enabled: bool = Field(default=True, description="Allow event-triggered proactive social contact")
-        user_command_triggers_enabled: bool = Field(default=True, description="Allow owner command-triggered social contact")
-        default_max_per_day: int = Field(default=5, description="Default daily proactive social quota per target bot")
-        default_max_per_hour: int = Field(default=2, description="Default hourly proactive social quota per target bot")
-        default_cooldown_seconds: int = Field(default=300, description="Default cooldown per target bot")
+        enabled: bool = Field(default=True, description="启用动态社交联系配额")
+        default_allow_all_bots: bool = Field(default=True, description="允许联系未配置为伙伴的 bot")
+        impulse_enabled: bool = Field(default=True, description="允许突发奇想触发主动社交")
+        event_triggers_enabled: bool = Field(default=True, description="允许事件触发主动社交")
+        user_command_triggers_enabled: bool = Field(default=True, description="允许用户指令触发主动社交")
+        default_max_per_day: int = Field(default=5, description="默认每目标每日主动社交上限")
+        default_max_per_hour: int = Field(default=2, description="默认每目标每小时主动社交上限")
+        default_cooldown_seconds: int = Field(default=300, description="默认每目标冷却秒数")
+
+    @config_section("proactive", title="Proactive", tag="plugin")
+    class ProactiveSection(SectionBase):
+        """Bot-owned autonomous relay initiation settings."""
+
+        enabled: bool = Field(default=False, description="启用 bot 自主发起通信")
+        check_interval_seconds: int = Field(default=300, description="主动决策检查间隔秒数")
+        max_per_hour: int = Field(default=3, description="每目标每小时 proactive 发送上限")
+        cooldown_seconds: int = Field(default=300, description="每目标 proactive 冷却秒数")
+        transaction_enabled: bool = Field(default=False, description="允许自主发起事务请求")
+        social_enabled: bool = Field(default=True, description="允许自主发起社交消息")
+        allow_offline_social: bool = Field(default=False, description="允许向离线目标发送社交消息")
+        decision_model_task: str = Field(default="sub_actor", description="主动通信决策固定使用的模型任务名")
+        message_model_task: str = Field(default="actor", description="主动消息生成固定使用的模型任务名")
+        decision_retry_interval_seconds: float = Field(default=1.0, description="主动决策空回复重试间隔秒数")
+        chat_hint_snapshot_items: int = Field(default=20, description="主动决策注入的最近聊天上下文条数")
 
     @config_section("social_quotas", title="Social Quotas", tag="plugin")
     class SocialQuotasSection(SectionBase):
@@ -115,6 +132,7 @@ class BotPrivateRelayConfig(BaseConfig):
     presence: PresenceSection = Field(default_factory=PresenceSection)
     todo_bridge: TodoBridgeSection = Field(default_factory=TodoBridgeSection)
     dynamic_social: DynamicSocialSection = Field(default_factory=DynamicSocialSection)
+    proactive: ProactiveSection = Field(default_factory=ProactiveSection)
     social_quotas: SocialQuotasSection = Field(default_factory=SocialQuotasSection)
 
     def partner_by_id(self, bot_id: str) -> PartnerSection | None:

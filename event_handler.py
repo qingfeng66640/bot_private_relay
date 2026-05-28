@@ -10,6 +10,7 @@ from src.core.models.message import Message
 from src.kernel.event import EventDecision
 
 from . import store
+from .config import BotPrivateRelayConfig
 
 
 class LoopGuardEventHandler(BaseEventHandler):
@@ -36,6 +37,7 @@ class LoopGuardEventHandler(BaseEventHandler):
             return EventDecision.PASS, params
         relay_envelope = message.extra.get("relay_envelope") if hasattr(message, "extra") else None
         if not isinstance(relay_envelope, dict):
+            self._record_proactive_chat_hint(message)
             return EventDecision.PASS, params
         message_id = str(relay_envelope.get("message_id") or message.message_id or "")
         if message_id and not store.remember_message(message_id):
@@ -76,6 +78,29 @@ class LoopGuardEventHandler(BaseEventHandler):
                     extra["bot_internal"] = True
         self._set_continue_send(params, True)
         return EventDecision.STOP, params
+
+    def _record_proactive_chat_hint(self, message: Message) -> None:
+        """Record ordinary chat messages as proactive decision context."""
+
+        if message.platform == "bot_relay":
+            return
+        config = getattr(self.plugin, "config", None)
+        if isinstance(config, BotPrivateRelayConfig) and not config.proactive.enabled:
+            return
+        text = str(message.processed_plain_text or message.content or "").strip()
+        if not text:
+            return
+        store.save_proactive_chat_hint(
+            store.ProactiveChatHint(
+                message_id=message.message_id,
+                platform=message.platform,
+                chat_type=message.chat_type,
+                stream_id=message.stream_id,
+                sender_id=message.sender_id,
+                sender_name=message.sender_name or message.sender_cardname or "",
+                text=text,
+            )
+        )
 
     @staticmethod
     def _set_continue_send(params: dict[str, Any], value: bool) -> None:

@@ -89,6 +89,20 @@ class RelayMemoryCandidate:
     score: float = 0.0
 
 
+@dataclass(slots=True)
+class ProactiveChatHint:
+    """Recent non-relay chat message available to proactive decisions."""
+
+    message_id: str
+    platform: str
+    chat_type: str
+    stream_id: str
+    sender_id: str
+    sender_name: str
+    text: str
+    received_at: float = field(default_factory=time.time)
+
+
 DEDUP_CACHE: dict[str, float] = {}
 PRESENCE_TABLE: dict[str, PresenceRecord] = {}
 SESSION_TABLE: dict[str, RelaySession] = {}
@@ -97,9 +111,12 @@ TRANSACTION_LOG: dict[str, RelayTransactionRecord] = {}
 RELAY_TODOS: dict[str, RelayTodoItem] = {}
 RELAY_SCHEDULES: dict[str, RelayScheduleItem] = {}
 RELAY_MEMORY_CANDIDATES: dict[str, RelayMemoryCandidate] = {}
+PROACTIVE_CHAT_HINTS: list[ProactiveChatHint] = []
 DYNAMIC_SOCIAL_DAILY_COUNTS: dict[tuple[str, str], int] = {}
 DYNAMIC_SOCIAL_HOURLY_COUNTS: dict[tuple[str, str], int] = {}
 DYNAMIC_SOCIAL_COOLDOWNS: dict[str, float] = {}
+PROACTIVE_COOLDOWNS: dict[str, float] = {}
+PROACTIVE_HOURLY_COUNTS: dict[tuple[str, str, str], int] = {}
 
 
 def reset_state() -> None:
@@ -113,9 +130,12 @@ def reset_state() -> None:
     RELAY_TODOS.clear()
     RELAY_SCHEDULES.clear()
     RELAY_MEMORY_CANDIDATES.clear()
+    PROACTIVE_CHAT_HINTS.clear()
     DYNAMIC_SOCIAL_DAILY_COUNTS.clear()
     DYNAMIC_SOCIAL_HOURLY_COUNTS.clear()
     DYNAMIC_SOCIAL_COOLDOWNS.clear()
+    PROACTIVE_COOLDOWNS.clear()
+    PROACTIVE_HOURLY_COUNTS.clear()
 
 
 def remember_message(message_id: str, ttl_seconds: int = 3600) -> bool:
@@ -186,3 +206,15 @@ def save_memory_candidate(candidate: RelayMemoryCandidate) -> None:
     """Persist projected memory candidate."""
 
     RELAY_MEMORY_CANDIDATES[candidate.candidate_id] = candidate
+
+
+def save_proactive_chat_hint(hint: ProactiveChatHint, *, max_items: int = 60, ttl_seconds: int = 3600) -> None:
+    """Store a recent ordinary chat hint for proactive decisions."""
+
+    now = time.time()
+    PROACTIVE_CHAT_HINTS[:] = [
+        item for item in PROACTIVE_CHAT_HINTS if now - item.received_at <= ttl_seconds and item.message_id != hint.message_id
+    ]
+    PROACTIVE_CHAT_HINTS.append(hint)
+    if len(PROACTIVE_CHAT_HINTS) > max_items:
+        del PROACTIVE_CHAT_HINTS[:-max_items]

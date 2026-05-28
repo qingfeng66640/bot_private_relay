@@ -69,6 +69,14 @@ class DummySink:
         self.captured.append(envelope)
 
 
+class DummyMqttMessage:
+    """MQTT message test double."""
+
+    def __init__(self, topic: str, payload: str) -> None:
+        self.topic = topic
+        self.payload = payload.encode("utf-8")
+
+
 class RecordingMessageSender:
     """MessageSender test double recording outbound send calls."""
 
@@ -94,6 +102,30 @@ def build_config() -> BotPrivateRelayConfig:
     config.partners.bot_b = PartnerSection(bot_id="114514", bot_name="流光")
     config.presence.allowed_partner_bots = ["114514"]
     return config
+
+
+def test_mqtt_presence_inbound_respects_system_log_config(monkeypatch: Any) -> None:
+    adapter = build_adapter()
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr("plugins.bot_private_relay.adapter.logger.info", lambda message: calls.append(("info", message)))
+    adapter._event_loop = SimpleNamespace(is_closed=lambda: False)
+
+    def consume_coro(coro: Any, *_args: Any, **_kwargs: Any) -> None:
+        coro.close()
+
+    monkeypatch.setattr(
+        "plugins.bot_private_relay.adapter.asyncio.run_coroutine_threadsafe",
+        consume_coro,
+    )
+
+    adapter._on_mqtt_message_callback(None, None, DummyMqttMessage("bot/presence/114514", "{}"))
+    adapter.relay_config.relay.show_system_message_logs = False
+    adapter._on_mqtt_message_callback(None, None, DummyMqttMessage("bot/presence/114514", "{}"))
+    adapter._on_mqtt_message_callback(None, None, DummyMqttMessage("bot/223123/inbox", "{}"))
+
+    assert len(calls) == 2
+    assert "bot/presence/114514" in calls[0][1]
+    assert "bot/223123/inbox" in calls[1][1]
 
 
 # ── Phase 0 / manifest identity ──────────────────────────────────────
@@ -411,6 +443,42 @@ def test_adapter_accepts_allowed_partner_and_returns_message_envelope() -> None:
     assert session.peer_bot_id == "114514"
     assert session.state == "pending_reply"
     assert session.allowed_responders == ["223123"]
+
+
+def test_adapter_drops_orphan_transaction_continuation_before_chatter() -> None:
+    store.reset_state()
+    adapter = build_adapter()
+
+    envelope = asyncio.run(
+        adapter.from_platform_message(
+            {
+                "from_bot": "114514",
+                "from_bot_name": "流光",
+                "to_bot": "223123",
+                "to_bot_name": "清风",
+                "channel": "transaction",
+                "intent": "accept",
+                "expect_reply": False,
+                "reply_budget": 99,
+                "terminal": True,
+                "allowed_responders": ["223123"],
+                "state": "accepted",
+                "hop": 0,
+                "ttl": 4,
+                "message_id": "m-orphan-accept",
+                "conversation_id": "c-orphan-accept",
+                "trace_id": "t-orphan-accept",
+                "payload": {"text": "我接受你的邀请。"},
+            }
+        )
+    )
+
+    assert envelope is None
+    assert store.SESSION_TABLE == {}
+    assert store.TRANSACTION_LOG == {}
+    assert store.AUDIT_LOG[-1]["event"] == "orphan_transaction_continuation"
+    assert store.AUDIT_LOG[-1]["intent"] == "accept"
+    assert store.AUDIT_LOG[-1]["conversation_id"] == "c-orphan-accept"
 
 
 def test_adapter_persists_inbound_invite_session() -> None:
@@ -2374,6 +2442,12 @@ def test_relay_social_contact_tool_uses_registered_relay_config(monkeypatch: Any
     assert adapter_signature == "bot_private_relay:adapter:bot_relay"
     assert message.platform == "bot_relay"
     assert message.extra["relay_context"]["channel"] == "social"
+
+
+def test_relay_social_contact_tool_isolated_to_bot_relay_chatter() -> None:
+    assert RelaySocialContactTool.chatter_allow == ["bot_relay_chatter"]
+    assert RelaySocialContactTool.associated_platforms == ["bot_relay"]
+
 
 
 def test_plugin_loaded_registers_relay_social_tool(monkeypatch: Any) -> None:

@@ -93,6 +93,11 @@
     },
     {
       "component_type": "service",
+      "component_name": "relay_proactive",
+      "dependencies": []
+    },
+    {
+      "component_type": "service",
       "component_name": "relay_memory_bridge",
       "dependencies": []
     },

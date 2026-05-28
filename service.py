@@ -9,6 +9,8 @@ from pathlib import Path
 from src.core.components.base import BaseService
 
 from . import store
+from .config import BotPrivateRelayConfig
+from .proactive import run_proactive_tick
 
 
 class RelayStateService(BaseService):
@@ -70,3 +72,19 @@ class RelayStateService(BaseService):
         }
         target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return target
+
+
+class RelayProactiveService(BaseService):
+    """Run proactive relay ticks without owning runtime state."""
+
+    service_name = "relay_proactive"
+    service_description = "Bot private relay proactive initiation"
+    version = "0.1.0"
+
+    async def tick(self) -> bool:
+        """Run one proactive decision cycle."""
+
+        config = getattr(self.plugin, "config", None)
+        if not isinstance(config, BotPrivateRelayConfig):
+            return False
+        return await run_proactive_tick(config)

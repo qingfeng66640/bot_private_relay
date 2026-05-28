@@ -226,6 +226,9 @@ class BotRelayAdapter(BaseAdapter):
             config = self.relay_config.relay
             client.subscribe(f"bot/{config.bot_id}/inbox", qos=1)
             logger.info(f"Subscribed to bot/{config.bot_id}/inbox")
+            for partner_bot_id in self.relay_config.presence.allowed_partner_bots:
+                client.subscribe(f"bot/presence/{partner_bot_id}", qos=1)
+                logger.info(f"Subscribed to bot/presence/{partner_bot_id}")
             self._publish_presence_sync(client, config.bot_id, "online")
         else:
             logger.warning(f"MQTT connect returned reason_code: {reason_code}")
@@ -286,9 +289,12 @@ class BotRelayAdapter(BaseAdapter):
         except Exception as exc:
             logger.warning(f"MQTT message decode failed on topic {msg.topic}: {exc}")
             return
-        logger.info(
-            f"MQTT inbound on {msg.topic} ({len(raw)} bytes); dispatching to event loop"
-        )
+        log_message = f"MQTT inbound on {msg.topic} ({len(raw)} bytes); dispatching to event loop"
+        if str(msg.topic).startswith("bot/presence/"):
+            if self.relay_config.relay.show_system_message_logs:
+                logger.info(log_message)
+        else:
+            logger.info(log_message)
         if self._event_loop is None or self._event_loop.is_closed():
             logger.warning("MQTT message received but event loop unavailable; dropping")
             return
@@ -417,6 +423,20 @@ class BotRelayAdapter(BaseAdapter):
         system_handler = SystemChannelHandler(presence_manager)
         if system_handler.handle(relay_envelope):
             return None
+        if self._is_orphan_transaction_continuation(relay_envelope):
+            logger.warning(
+                "Dropping orphan relay transaction continuation: "
+                f"from_bot={relay_envelope.from_bot}, "
+                f"conversation_id={relay_envelope.conversation_id}, intent={relay_envelope.intent}"
+            )
+            store.audit(
+                "orphan_transaction_continuation",
+                from_bot=relay_envelope.from_bot,
+                to_bot=relay_envelope.to_bot,
+                intent=relay_envelope.intent,
+                conversation_id=relay_envelope.conversation_id,
+            )
+            return None
         transaction_session = self._session_manager.sync_inbound_transaction_session(relay_envelope)
         transaction_session = await self._auto_confirm_inbound_accept(relay_envelope, transaction_session)
         if transaction_session is not None:
@@ -461,6 +481,14 @@ class BotRelayAdapter(BaseAdapter):
             ],
             raw_message=raw_dict,
         )
+
+    @staticmethod
+    def _is_orphan_transaction_continuation(envelope: RelayEnvelope) -> bool:
+        """Reject transaction follow-ups that have no local session."""
+
+        if envelope.channel != "transaction" or envelope.intent in {"notify", "request", "invite"}:
+            return False
+        return store.get_session(envelope.conversation_id) is None
 
     async def _publish_sender_not_allowed_error(self, inbound: RelayEnvelope) -> None:
         """Send an explicit protocol error for rejected non-system envelopes."""

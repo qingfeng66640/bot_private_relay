@@ -79,6 +79,7 @@ class RelaySocialContactTool(BaseTool):
         "通过 bot_relay 的 social channel 联系另一个 bot。"
         "用于 todo 插件执行 bot 待办时联系其他 bot；禁止用于 transaction/system。"
     )
+    chatter_allow = ["bot_relay_chatter"]
     associated_platforms = ["bot_relay"]
 
     async def execute(
