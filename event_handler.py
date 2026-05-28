@@ -1,4 +1,4 @@
-"""Loop guard event handler for bot private relay."""
+"""Event handlers for bot private relay."""
 
 from __future__ import annotations
 
@@ -11,6 +11,32 @@ from src.kernel.event import EventDecision
 
 from . import store
 from .config import BotPrivateRelayConfig
+
+
+def _normalized_set(values: list[str]) -> set[str]:
+    """Return non-empty lower-case values for config matching."""
+
+    return {str(value).strip().lower() for value in values if str(value).strip()}
+
+
+def _message_exists_in_history(context: Any, message: Message) -> bool:
+    """Return whether the message is already present in stream history."""
+
+    message_id = str(message.message_id or "")
+    return bool(
+        message_id
+        and any(str(getattr(item, "message_id", "") or "") == message_id for item in getattr(context, "history_messages", []))
+    )
+
+
+def _add_history_once(context: Any, message: Message) -> None:
+    """Move a suppressed message into history without duplicating it."""
+
+    if _message_exists_in_history(context, message):
+        return
+    add_history_message = getattr(context, "add_history_message", None)
+    if callable(add_history_message):
+        add_history_message(message)
 
 
 class LoopGuardEventHandler(BaseEventHandler):
@@ -108,3 +134,79 @@ class LoopGuardEventHandler(BaseEventHandler):
 
         if "continue_send" in params:
             params["continue_send"] = value
+
+
+class GroupReplySuppressionEventHandler(BaseEventHandler):
+    """Receive configured bot messages in groups without triggering replies."""
+
+    handler_name = "group_reply_suppression"
+    handler_description = "Suppress default chatter replies to configured group bot senders"
+    weight = 300
+    intercept_message = False
+    init_subscribe = [EventType.ON_CHATTER_STEP]
+
+    async def execute(self, event_name: str, params: dict[str, Any]) -> tuple[EventDecision, dict[str, Any]]:
+        """Filter blocked bot messages before chatter consumes unread messages."""
+
+        if event_name != EventType.ON_CHATTER_STEP:
+            return EventDecision.PASS, params
+
+        config = getattr(self.plugin, "config", None)
+        if not isinstance(config, BotPrivateRelayConfig):
+            return EventDecision.PASS, params
+        suppression = config.group_reply_suppression
+        blocked_bot_ids = {str(bot_id).strip() for bot_id in suppression.blocked_bot_ids if str(bot_id).strip()}
+        if not suppression.enabled or not blocked_bot_ids:
+            return EventDecision.PASS, params
+
+        context = params.get("context")
+        unread_messages = getattr(context, "unread_messages", None)
+        if context is None or not isinstance(unread_messages, list) or not unread_messages:
+            return EventDecision.PASS, params
+
+        platforms = _normalized_set(suppression.platforms)
+        chat_types = _normalized_set(suppression.chat_types)
+        kept: list[Message] = []
+        suppressed: list[Message] = []
+        for message in unread_messages:
+            if isinstance(message, Message) and self._should_suppress(message, platforms, chat_types, blocked_bot_ids):
+                suppressed.append(message)
+            else:
+                kept.append(message)
+
+        if not suppressed:
+            return EventDecision.PASS, params
+
+        context.unread_messages = kept
+        for message in suppressed:
+            _add_history_once(context, message)
+            store.audit(
+                "group_reply_suppressed",
+                stream_id=message.stream_id,
+                message_id=message.message_id,
+                sender_id=message.sender_id,
+                reason_code="configured_group_bot",
+            )
+
+        if kept:
+            context.triggering_user_id = kept[-1].sender_id
+            params["continue"] = True
+            return EventDecision.SUCCESS, params
+
+        context.triggering_user_id = None
+        params["continue"] = False
+        return EventDecision.SUCCESS, params
+
+    @staticmethod
+    def _should_suppress(
+        message: Message,
+        platforms: set[str],
+        chat_types: set[str],
+        blocked_bot_ids: set[str],
+    ) -> bool:
+        """Return whether the message should be removed before chatter execution."""
+
+        platform = str(message.platform or "").strip().lower()
+        chat_type = str(message.chat_type or "").strip().lower()
+        sender_id = str(message.sender_id or "").strip()
+        return platform in platforms and chat_type in chat_types and sender_id in blocked_bot_ids

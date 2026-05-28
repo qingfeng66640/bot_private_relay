@@ -82,6 +82,11 @@
       "dependencies": []
     },
     {
+      "component_type": "event_handler",
+      "component_name": "group_reply_suppression",
+      "dependencies": []
+    },
+    {
       "component_type": "command",
       "component_name": "relay",
       "dependencies": []

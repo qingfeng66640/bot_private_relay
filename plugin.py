@@ -13,7 +13,7 @@ from .chatter import BotRelayChatter
 from .command import RelayCommand
 from .config import BotPrivateRelayConfig
 from .dynamic_social import RelaySocialContactTool, register_relay_config
-from .event_handler import LoopGuardEventHandler
+from .event_handler import GroupReplySuppressionEventHandler, LoopGuardEventHandler
 from .memory_bridge import MemoryBridgeService
 from .relay_actions import (
     BotRelayPassAndWaitAction,
@@ -72,6 +72,7 @@ class BotPrivateRelayPlugin(BasePlugin):
             CloseTransactionTool,
             RelaySocialContactTool,
             LoopGuardEventHandler,
+            GroupReplySuppressionEventHandler,
             RelayCommand,
             RelayStateService,
             RelayProactiveService,

@@ -121,6 +121,15 @@ class BotPrivateRelayConfig(BaseConfig):
         decision_retry_interval_seconds: float = Field(default=1.0, description="主动决策空回复重试间隔秒数")
         chat_hint_snapshot_items: int = Field(default=20, description="主动决策注入的最近聊天上下文条数")
 
+    @config_section("group_reply_suppression", title="Group Reply Suppression", tag="plugin")
+    class GroupReplySuppressionSection(SectionBase):
+        """Suppress local chatter replies to configured bots in group chats."""
+
+        enabled: bool = Field(default=True, description="启用群聊 bot 静默拦截")
+        platforms: list[str] = Field(default_factory=lambda: ["qq"], description="启用静默拦截的平台列表")
+        chat_types: list[str] = Field(default_factory=lambda: ["group"], description="启用静默拦截的聊天类型列表")
+        blocked_bot_ids: list[str] = Field(default_factory=list, description="群聊中只接收不回复的 bot QQ 号列表")
+
     @config_section("social_quotas", title="Social Quotas", tag="plugin")
     class SocialQuotasSection(SectionBase):
         """Named per-target social quota overrides."""
@@ -133,6 +142,7 @@ class BotPrivateRelayConfig(BaseConfig):
     todo_bridge: TodoBridgeSection = Field(default_factory=TodoBridgeSection)
     dynamic_social: DynamicSocialSection = Field(default_factory=DynamicSocialSection)
     proactive: ProactiveSection = Field(default_factory=ProactiveSection)
+    group_reply_suppression: GroupReplySuppressionSection = Field(default_factory=GroupReplySuppressionSection)
     social_quotas: SocialQuotasSection = Field(default_factory=SocialQuotasSection)
 
     def partner_by_id(self, bot_id: str) -> PartnerSection | None:
