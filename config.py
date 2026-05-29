@@ -43,7 +43,10 @@ class BotPrivateRelayConfig(BaseConfig):
         [relay]
         bot_id = "223123"
         bot_name = "清风"
-        relay_url = "mqtt://8.163.34.70:1883"
+        relay_url = "mqtts://relay.example.com:8883"
+        auth_token = "shared-token"
+        tls_ca_file = ""
+        tls_insecure = false
 
         [partners.bot_b]
         bot_id = "114514"
@@ -65,6 +68,11 @@ class BotPrivateRelayConfig(BaseConfig):
         bot_name: str = Field(default="", description="本 bot 的显示名称")
         relay_url: str = Field(default="mqtt://localhost:1883", description="MQTT 中继地址")
         auth_token: str = Field(default="", description="可选认证 token")
+        tls_enabled: bool = Field(default=False, description="强制启用 MQTT TLS；relay_url 使用 mqtts:// 时会自动启用")
+        tls_ca_file: str = Field(default="", description="TLS CA 证书路径；为空时使用系统默认 CA")
+        tls_cert_file: str = Field(default="", description="可选客户端证书路径，用于双向 TLS")
+        tls_key_file: str = Field(default="", description="可选客户端私钥路径，用于双向 TLS")
+        tls_insecure: bool = Field(default=False, description="仅调试使用：跳过 TLS 证书与主机名校验，生产环境不要启用")
         default_ttl: int = Field(default=4, description="默认中继跳数 TTL")
         default_reply_budget: int = Field(default=3, description="默认请求回复预算")
         show_system_message_logs: bool = Field(default=True, description="是否在日志中展示系统消息入站")

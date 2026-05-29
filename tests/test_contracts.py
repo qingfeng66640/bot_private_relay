@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import ssl
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -445,6 +446,127 @@ def test_adapter_accepts_allowed_partner_and_returns_message_envelope() -> None:
     assert session.allowed_responders == ["223123"]
 
 
+def test_adapter_adds_auth_token_to_outbound_payload() -> None:
+    adapter = build_adapter()
+    adapter.relay_config.relay.auth_token = "shared-secret"
+    envelope = RelayEnvelope(
+        from_bot="223123",
+        to_bot="114514",
+        channel="transaction",
+        intent="notify",
+        payload={"text": "hello"},
+    )
+
+    payload = adapter._payload_dict_for_envelope(envelope)
+
+    assert payload["auth_token"] == "shared-secret"
+    assert "auth_token" not in envelope.to_dict()
+
+
+def test_adapter_publish_relay_envelope_includes_auth_token() -> None:
+    class StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, int, bool]] = []
+
+        def publish(self, topic: str, payload: str, qos: int, retain: bool) -> None:
+            self.calls.append((topic, payload, qos, retain))
+
+    adapter = build_adapter()
+    adapter.relay_config.relay.auth_token = "shared-secret"
+    client = StubClient()
+    adapter._mqtt_client = client
+    envelope = RelayEnvelope(
+        from_bot="223123",
+        to_bot="114514",
+        channel="transaction",
+        intent="notify",
+        payload={"text": "hello"},
+    )
+
+    asyncio.run(adapter.publish_relay_envelope(envelope))
+
+    assert len(client.calls) == 1
+    topic, payload, qos, retain = client.calls[0]
+    assert topic == "bot/114514/inbox"
+    assert json.loads(payload)["auth_token"] == "shared-secret"
+    assert qos == 1
+    assert retain is False
+
+
+def test_adapter_rejects_inbound_when_auth_token_missing_or_invalid() -> None:
+    store.reset_state()
+    adapter = build_adapter()
+    adapter.relay_config.relay.auth_token = "shared-secret"
+    base_payload = {
+        "from_bot": "114514",
+        "from_bot_name": "流光",
+        "to_bot": "223123",
+        "to_bot_name": "清风",
+        "channel": "transaction",
+        "intent": "request",
+        "expect_reply": True,
+        "reply_budget": 3,
+        "terminal": False,
+        "allowed_responders": ["223123"],
+        "hop": 0,
+        "ttl": 4,
+        "message_id": "m-auth",
+        "conversation_id": "c-auth",
+        "trace_id": "t-auth",
+        "payload": {"text": "请帮我处理一下"},
+    }
+
+    missing = asyncio.run(adapter.from_platform_message(dict(base_payload)))
+    invalid = asyncio.run(adapter.from_platform_message({**base_payload, "auth_token": "wrong"}))
+
+    assert missing is None
+    assert invalid is None
+    assert [entry["reason_code"] for entry in store.AUDIT_LOG] == ["missing_token", "invalid_token"]
+    assert {entry["event"] for entry in store.AUDIT_LOG} == {"auth_token_invalid"}
+    assert store.SESSION_TABLE == {}
+
+
+def test_adapter_accepts_valid_auth_token_and_sanitizes_message_metadata() -> None:
+    store.reset_state()
+    adapter = build_adapter()
+    adapter.relay_config.relay.auth_token = "shared-secret"
+    envelope = asyncio.run(
+        adapter.from_platform_message(
+            {
+                "auth_token": "shared-secret",
+                "from_bot": "114514",
+                "from_bot_name": "流光",
+                "to_bot": "223123",
+                "to_bot_name": "清风",
+                "channel": "transaction",
+                "intent": "request",
+                "expect_reply": True,
+                "reply_budget": 3,
+                "terminal": False,
+                "allowed_responders": ["223123"],
+                "hop": 0,
+                "ttl": 4,
+                "message_id": "m-auth-ok",
+                "conversation_id": "c-auth-ok",
+                "trace_id": "t-auth-ok",
+                "payload": {"text": "请帮我处理一下"},
+            }
+        )
+    )
+
+    assert envelope is not None
+    assert envelope.get("raw_message", {}).get("auth_token") is None
+    extra = (envelope.get("message_info") or {}).get("extra", {})
+    relay_envelope = extra.get("relay_envelope", {}) if isinstance(extra, dict) else {}
+    relay_context = extra.get("relay_context", {}) if isinstance(extra, dict) else {}
+    assert "auth_token" not in relay_envelope
+    assert "auth_token" not in relay_context
+    session = store.SESSION_TABLE["c-auth-ok"]
+    assert session.peer_bot_id == "114514"
+    assert session.state == "pending_reply"
+    assert session.allowed_responders == ["223123"]
+
+
 def test_adapter_drops_orphan_transaction_continuation_before_chatter() -> None:
     store.reset_state()
     adapter = build_adapter()
@@ -638,6 +760,91 @@ def test_adapter_stops_existing_mqtt_client_before_reconnect() -> None:
     assert client.loop_stopped is True
     assert client.disconnected is True
     assert adapter._mqtt_client is None
+
+
+def test_adapter_parse_broker_url_uses_plaintext_defaults() -> None:
+    adapter = build_adapter()
+    adapter.relay_config.relay.relay_url = "mqtt://broker.example.com"
+
+    host, port, use_tls = adapter._parse_broker_url()
+
+    assert host == "broker.example.com"
+    assert port == 1883
+    assert use_tls is False
+
+
+def test_adapter_parse_broker_url_enables_tls_for_mqtts() -> None:
+    adapter = build_adapter()
+    adapter.relay_config.relay.relay_url = "mqtts://broker.example.com"
+
+    host, port, use_tls = adapter._parse_broker_url()
+
+    assert host == "broker.example.com"
+    assert port == 8883
+    assert use_tls is True
+
+
+def test_adapter_parse_broker_url_preserves_explicit_tls_port() -> None:
+    adapter = build_adapter()
+    adapter.relay_config.relay.relay_url = "mqtts://broker.example.com:18884"
+
+    host, port, use_tls = adapter._parse_broker_url()
+
+    assert host == "broker.example.com"
+    assert port == 18884
+    assert use_tls is True
+
+
+def test_adapter_parse_broker_url_supports_explicit_tls_flag() -> None:
+    adapter = build_adapter()
+    adapter.relay_config.relay.relay_url = "mqtt://broker.example.com:8883"
+    adapter.relay_config.relay.tls_enabled = True
+
+    host, port, use_tls = adapter._parse_broker_url()
+
+    assert host == "broker.example.com"
+    assert port == 8883
+    assert use_tls is True
+
+
+def test_adapter_configure_mqtt_tls_sets_ssl_context() -> None:
+    class StubClient:
+        def __init__(self) -> None:
+            self.context: ssl.SSLContext | None = None
+
+        def tls_set_context(self, context: ssl.SSLContext) -> None:
+            self.context = context
+
+    adapter = build_adapter()
+    client = StubClient()
+
+    adapter._configure_mqtt_tls(client)
+
+    assert isinstance(client.context, ssl.SSLContext)
+    assert client.context.verify_mode == ssl.CERT_REQUIRED
+    assert client.context.check_hostname is True
+
+
+def test_adapter_configure_mqtt_tls_insecure_mode_is_explicit(monkeypatch: Any) -> None:
+    class StubClient:
+        def __init__(self) -> None:
+            self.context: ssl.SSLContext | None = None
+
+        def tls_set_context(self, context: ssl.SSLContext) -> None:
+            self.context = context
+
+    adapter = build_adapter()
+    adapter.relay_config.relay.tls_insecure = True
+    warnings: list[str] = []
+    monkeypatch.setattr("plugins.bot_private_relay.adapter.logger.warning", warnings.append)
+    client = StubClient()
+
+    adapter._configure_mqtt_tls(client)
+
+    assert isinstance(client.context, ssl.SSLContext)
+    assert client.context.verify_mode == ssl.CERT_NONE
+    assert client.context.check_hostname is False
+    assert warnings == ["MQTT TLS certificate verification is disabled by relay.tls_insecure"]
 
 
 def test_adapter_partner_resolution_handles_malformed_context() -> None:

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import ssl
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,6 +25,8 @@ from .system_handler import SystemChannelHandler
 from .todo_bridge import TodoBridge
 
 logger = get_logger("bot_private_relay_adapter")
+
+_AUTH_TOKEN_FIELD = "auth_token"
 
 
 class BotRelayAdapter(BaseAdapter):
@@ -125,13 +129,41 @@ class BotRelayAdapter(BaseAdapter):
 
     # ── MQTT connection lifecycle ────────────────────────────────────
 
-    def _parse_broker_url(self) -> tuple[str, int]:
-        """Parse host and port from relay_url."""
+    def _parse_broker_url(self) -> tuple[str, int, bool]:
+        """Parse host, port, and TLS mode from relay_url plus config."""
         url = self.relay_config.relay.relay_url
         parsed = urlparse(url)
         host = parsed.hostname or "localhost"
-        port = parsed.port or 1883
-        return host, port
+        use_tls = parsed.scheme == "mqtts" or self.relay_config.relay.tls_enabled
+        default_port = 8883 if use_tls else 1883
+        port = parsed.port or default_port
+        return host, port, use_tls
+
+    def _build_tls_context(self) -> ssl.SSLContext:
+        """Build the MQTT TLS context from relay TLS configuration."""
+
+        config = self.relay_config.relay
+        ca_file = config.tls_ca_file.strip() or None
+        context = ssl.create_default_context(cafile=ca_file)
+        cert_file = config.tls_cert_file.strip()
+        key_file = config.tls_key_file.strip() or None
+        if cert_file:
+            context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+        if config.tls_insecure:
+            # Kept for local self-signed broker bring-up only; production should
+            # validate both certificate chain and hostname.
+            logger.warning("MQTT TLS certificate verification is disabled by relay.tls_insecure")
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        return context
+
+    def _configure_mqtt_tls(self, client: Any) -> None:
+        """Apply TLS settings to a paho MQTT client before connect()."""
+
+        tls_set_context = getattr(client, "tls_set_context", None)
+        if not callable(tls_set_context):
+            raise RuntimeError("MQTT client does not support tls_set_context")
+        tls_set_context(self._build_tls_context())
 
     async def _mqtt_connect_loop(self) -> None:
         """Full MQTT connect / subscribe / presence / heartbeat / reconnect loop.
@@ -147,7 +179,7 @@ class BotRelayAdapter(BaseAdapter):
             return
 
         config = self.relay_config.relay
-        broker_host, broker_port = self._parse_broker_url()
+        broker_host, broker_port, use_tls = self._parse_broker_url()
         self._cancel_heartbeat_task()
         self._stop_mqtt_client()
 
@@ -163,16 +195,19 @@ class BotRelayAdapter(BaseAdapter):
 
         presence_mgr = PresenceManager(self.relay_config)
         will_envelope = presence_mgr.build_presence_envelope(status="offline")
-        will_payload = json.dumps(will_envelope.to_dict(), ensure_ascii=False)
+        will_payload = json.dumps(self._payload_dict_for_envelope(will_envelope), ensure_ascii=False)
         client.will_set(
             f"bot/presence/{config.bot_id}",
             will_payload,
             qos=1,
             retain=True,
         )
+        if use_tls:
+            self._configure_mqtt_tls(client)
 
+        scheme = "mqtts" if use_tls else "mqtt"
         logger.info(
-            f"Bot private relay MQTT connecting to {broker_host}:{broker_port}"
+            f"Bot private relay MQTT connecting to {scheme}://{broker_host}:{broker_port}"
         )
         try:
             client.connect(broker_host, broker_port, keepalive=self._KEEPALIVE)
@@ -312,26 +347,23 @@ class BotRelayAdapter(BaseAdapter):
         presence_mgr = PresenceManager(self.relay_config)
         envelope = presence_mgr.build_presence_envelope(status=status)
         topic = self._topic_for_envelope(envelope)
-        payload = json.dumps(envelope.to_dict(), ensure_ascii=False)
+        payload = json.dumps(self._payload_dict_for_envelope(envelope), ensure_ascii=False)
         publish = getattr(self._mqtt_client, "publish", None)
         if callable(publish):
             publish(topic, payload, qos=1, retain=True)
 
-    @staticmethod
-    def _publish_presence_sync(client: Any, bot_id: str, status: str) -> None:
+    def _publish_presence_sync(self, client: Any, bot_id: str, status: str) -> None:
         """Publish presence synchronously from MQTT callback thread."""
-        payload = json.dumps(
-            {
-                "from_bot": bot_id,
-                "to_bot": "*",
-                "channel": "system",
-                "intent": "presence_update",
-                "terminal": True,
-                "expect_reply": False,
-                "payload": {"status": status},
-            },
-            ensure_ascii=False,
+        envelope = RelayEnvelope(
+            from_bot=bot_id,
+            to_bot="*",
+            channel="system",
+            intent="presence_update",
+            terminal=True,
+            expect_reply=False,
+            payload={"status": status},
         )
+        payload = json.dumps(self._payload_dict_for_envelope(envelope), ensure_ascii=False)
         publish = getattr(client, "publish", None)
         if callable(publish):
             publish(f"bot/presence/{bot_id}", payload, qos=1, retain=True)
@@ -378,7 +410,7 @@ class BotRelayAdapter(BaseAdapter):
         if self._mqtt_client is None:
             logger.info("MQTT client not connected; skipping live publish in current environment")
             return
-        payload = json.dumps(envelope.to_dict(), ensure_ascii=False)
+        payload = json.dumps(self._payload_dict_for_envelope(envelope), ensure_ascii=False)
         topic = self._topic_for_envelope(envelope)
         publish = getattr(self._mqtt_client, "publish", None)
         if callable(publish):
@@ -396,6 +428,9 @@ class BotRelayAdapter(BaseAdapter):
             raw_dict = raw
         else:
             return None
+        if not self._verify_inbound_auth(raw_dict):
+            return None
+        raw_dict = self._without_auth_fields(raw_dict)
         relay_envelope = RelayEnvelope.from_dict(raw_dict)
         relay_envelope = relay_envelope.increment_hop()
         relay_envelope.validate()
@@ -638,6 +673,55 @@ class BotRelayAdapter(BaseAdapter):
             state="closed",
             payload={"text": "已确认当前事务。"},
         )
+
+    def _payload_dict_for_envelope(self, envelope: RelayEnvelope) -> dict[str, Any]:
+        """Return outbound payload data with optional transport auth."""
+
+        data = envelope.to_dict()
+        token = self.relay_config.relay.auth_token.strip()
+        if token:
+            data[_AUTH_TOKEN_FIELD] = token
+        return data
+
+    def _verify_inbound_auth(self, raw_dict: dict[str, Any]) -> bool:
+        """Verify optional transport auth before processing an envelope."""
+
+        expected = self.relay_config.relay.auth_token.strip()
+        if not expected:
+            return True
+        supplied = raw_dict.get(_AUTH_TOKEN_FIELD)
+        supplied_token = supplied if isinstance(supplied, str) else ""
+        if hmac.compare_digest(supplied_token, expected):
+            return True
+
+        reason_code = "missing_token" if not supplied_token else "invalid_token"
+        logger.warning(
+            "Rejecting relay envelope with invalid auth token: "
+            f"from_bot={raw_dict.get('from_bot', '')}, "
+            f"to_bot={raw_dict.get('to_bot', '')}, "
+            f"channel={raw_dict.get('channel', '')}, "
+            f"intent={raw_dict.get('intent', '')}, "
+            f"conversation_id={raw_dict.get('conversation_id', '')}, "
+            f"reason={reason_code}"
+        )
+        store.audit(
+            "auth_token_invalid",
+            from_bot=raw_dict.get("from_bot", ""),
+            to_bot=raw_dict.get("to_bot", ""),
+            channel=raw_dict.get("channel", ""),
+            intent=raw_dict.get("intent", ""),
+            conversation_id=raw_dict.get("conversation_id", ""),
+            reason_code=reason_code,
+        )
+        return False
+
+    @staticmethod
+    def _without_auth_fields(raw_dict: dict[str, Any]) -> dict[str, Any]:
+        """Remove transport auth fields before storing message metadata."""
+
+        sanitized = dict(raw_dict)
+        sanitized.pop(_AUTH_TOKEN_FIELD, None)
+        return sanitized
 
     @staticmethod
     def _apply_session_state_to_envelope(envelope: RelayEnvelope, session: store.RelaySession) -> None:
