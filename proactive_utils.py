@@ -1,5 +1,17 @@
 """Helpers for proactive relay snapshot trimming."""
 
+# =============================================================================
+# Proactive 快照裁剪工具
+# =============================================================================
+# proactive 决策需要将系统状态快照发送给 LLM，但 LLM 的上下文窗口有限。
+# 此模块提供了快照裁剪和 token 预算管理的工具函数。
+#
+# 核心功能：
+# 1. fit_snapshot_to_budget() - 将快照裁剪到模型上下文的 1/4
+# 2. cap_field()            - 截断过长字段
+# 3. compact_audit_value()  - 压缩审计日志值
+# =============================================================================
+
 from __future__ import annotations
 
 from typing import Any
@@ -8,7 +20,10 @@ from src.kernel.llm.token_counter import count_text_tokens
 
 
 def model_identifier_from_model_set(model_set: object) -> str:
-    """Return the first model identifier from a ModelSet-like object."""
+    """Return the first model identifier from a ModelSet-like object.
+
+    从 ModelSet 中提取第一个模型的标识符，用于 token 计数。
+    """
 
     if not isinstance(model_set, list) or not model_set:
         return ""
@@ -20,7 +35,11 @@ def model_identifier_from_model_set(model_set: object) -> str:
 
 
 def token_budget_from_model_set(model_set: object) -> int:
-    """Return proactive snapshot budget derived from first model config."""
+    """Return proactive snapshot budget derived from first model config.
+
+    计算 token 预算：min(max(1024, max_context // 4), 8000)。
+    即使用模型最大上下文的 1/4，但不能低于 1024，不能超过 8000。
+    """
 
     if not isinstance(model_set, list) or not model_set:
         return 6000
@@ -34,22 +53,32 @@ def token_budget_from_model_set(model_set: object) -> int:
 
 
 def fit_snapshot_to_budget(model_set: object, snapshot: str) -> str:
-    """Trim a structured snapshot to the proactive decision model budget."""
+    """Trim a structured snapshot to the proactive decision model budget.
+
+    如果快照的 token 数在预算内，直接返回。
+    否则按行从末尾开始保留（保留最新的信息），直到超出预算。
+    如果按行裁剪后仍然过大，使用二分查找在字符级别裁剪。
+    """
 
     model_identifier = model_identifier_from_model_set(model_set)
     if not model_identifier:
         return snapshot
+
     token_budget = token_budget_from_model_set(model_set)
     try:
         if count_text_tokens(snapshot, model_identifier=model_identifier) <= token_budget:
             return snapshot
     except Exception:
         return snapshot
+
     return _trim_text_suffix_by_budget(snapshot, model_identifier, token_budget)
 
 
 def cap_field(value: object, max_chars: int = 500) -> str:
-    """Return a bounded single-field string for snapshot rendering."""
+    """Return a bounded single-field string for snapshot rendering.
+
+    截断过长的字符串字段，防止单个字段占用过多 token。
+    """
 
     text = str(value or "").strip()
     if len(text) <= max_chars:
@@ -71,7 +100,11 @@ def _trim_text_suffix_by_budget(
     model_identifier: str,
     token_budget: int,
 ) -> str:
-    """Keep the newest snapshot lines while staying under token budget."""
+    """Keep the newest snapshot lines while staying under token budget.
+
+    从末尾开始保留行（优先保留最新信息），直到超出 token 预算。
+    如果单行就超出预算，回退到字符级别裁剪。
+    """
 
     if token_budget <= 0 or not text:
         return ""
@@ -79,6 +112,7 @@ def _trim_text_suffix_by_budget(
     lines = text.splitlines()
     kept_reversed: list[str] = []
     used_tokens = 0
+
     for line in reversed(lines):
         line_tokens = _safe_count_tokens(line, model_identifier)
         if kept_reversed and used_tokens + line_tokens > token_budget:
@@ -90,6 +124,7 @@ def _trim_text_suffix_by_budget(
     if candidate and _safe_count_tokens(candidate, model_identifier) <= token_budget:
         return candidate
 
+    # 按行裁剪后仍超标 → 回退到字符级别裁剪
     return _trim_text_suffix_by_chars(text, model_identifier, token_budget)
 
 
@@ -98,25 +133,36 @@ def _trim_text_suffix_by_chars(
     model_identifier: str,
     token_budget: int,
 ) -> str:
-    """Binary-search a char suffix when line-based trimming is still too large."""
+    """Binary-search a char suffix when line-based trimming is still too large.
+
+    使用二分查找找到满足 token 预算的最大字符后缀。
+    """
 
     left = 0
     right = len(text)
-    best = text[-512:]
+    best = text[-512:]  # 默认保留最后 512 字符
+
     while left <= right:
         middle = (left + right) // 2
         suffix = text[middle:]
         token_count = _safe_count_tokens(suffix, model_identifier)
+
         if token_count == 0 or token_count > token_budget:
             left = middle + 1
             continue
+
         best = suffix
         right = middle - 1
+
     return best.strip()
 
 
 def compact_audit_value(value: Any) -> str:
-    """Format an audit value for snapshot lines without leaking large payloads."""
+    """Format an audit value for snapshot lines without leaking large payloads.
+
+    格式化审计日志值：简单类型直接截断，复杂类型用 repr 截断。
+    防止大 payload 泄漏到快照中。
+    """
 
     if isinstance(value, (str, int, float, bool)) or value is None:
         return cap_field(value, 120)
