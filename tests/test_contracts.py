@@ -3154,7 +3154,7 @@ def test_mqtt_smoke_test_script_exists_and_is_importable_lazily() -> None:
     assert script.exists()
     text = script.read_text(encoding="utf-8")
     assert "def main()" in text
-    assert "8.163.34.70" in text  # default broker host documented
+    assert "mqtt.epieikeia216.cn" in text  # default broker host documented
 
 
 # ── Phase 4: command & router surface ─────────────────────────────────def test_phase4_command_and_router_surface() -> None:

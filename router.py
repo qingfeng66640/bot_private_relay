@@ -13,9 +13,9 @@
 
 from __future__ import annotations
 
-from src.app.plugin_system.base import BaseRouter
+from src.core.components.base.router import BaseRouter as BaseRouterComponent
 
-class BotPrivateRelayRouter(BaseRouter):
+class BotPrivateRelayRouter(BaseRouterComponent):
     """Minimal management router for plugin-local inspection."""
 
     router_name = "bot_private_relay"

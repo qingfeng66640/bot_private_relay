@@ -2,6 +2,10 @@
 __pycache__/
 *.py[cod]
 *.so
+.pytest_cache/
+
+# Dependency manager artifacts
+uv.lock
 
 # IDE
 .vscode/
@@ -14,3 +18,4 @@ env/
 # 临时文件
 *.log
 *.tmp
+tests/tmp_runtime/

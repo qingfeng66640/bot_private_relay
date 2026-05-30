@@ -23,8 +23,9 @@ Usage::
     python plugins/bot_private_relay/scripts/mqtt_smoke_test.py
     python plugins/bot_private_relay/scripts/mqtt_smoke_test.py --timeout 20
 
-Default broker: ``mqtt://8.163.34.70:1883`` (anonymous test).
-Override with CLI flags or ``RELAY_MQTT_HOST`` / ``RELAY_MQTT_PORT``.
+Default broker: ``mqtts://mqtt.epieikeia216.cn:8883`` (anonymous test).
+Override with CLI flags or ``RELAY_MQTT_HOST`` / ``RELAY_MQTT_PORT`` /
+``RELAY_MQTT_TLS``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import argparse
 import asyncio
 import json
 import os
+import ssl
 import sys
 import time
 import uuid
@@ -43,8 +45,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_HOST = os.environ.get("RELAY_MQTT_HOST", "8.163.34.70")
-DEFAULT_PORT = int(os.environ.get("RELAY_MQTT_PORT", "1883"))
+DEFAULT_HOST = os.environ.get("RELAY_MQTT_HOST", "mqtt.epieikeia216.cn")
+DEFAULT_PORT = int(os.environ.get("RELAY_MQTT_PORT", "8883"))
+DEFAULT_TLS = os.environ.get("RELAY_MQTT_TLS", "1").lower() not in {"0", "false", "no", "off"}
+DEFAULT_CA_FILE = os.environ.get("RELAY_MQTT_CA_FILE", "")
 
 BOT_A_ID = "223123"
 BOT_A_NAME = "清风"
@@ -222,6 +226,9 @@ def _make_client(
     *,
     run_id: str,
     qos: int,
+    use_tls: bool,
+    ca_file: str,
+    tls_insecure: bool,
 ) -> Any:
     """Create a paho-mqtt client with subscribe/will/callback wired."""
 
@@ -233,6 +240,12 @@ def _make_client(
         clean_session=True,
         protocol=mqtt.MQTTv311,
     )
+    if use_tls:
+        context = ssl.create_default_context(cafile=ca_file or None)
+        if tls_insecure:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        client.tls_set_context(context)
 
     def on_connect(
         c: Any,
@@ -382,6 +395,10 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run bot_private_relay transaction MQTT smoke test")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--tls", dest="tls", action="store_true", default=DEFAULT_TLS)
+    parser.add_argument("--no-tls", dest="tls", action="store_false")
+    parser.add_argument("--ca-file", default=DEFAULT_CA_FILE)
+    parser.add_argument("--tls-insecure", action="store_true")
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--qos", type=int, default=1, choices=(0, 1, 2))
     return parser.parse_args()
@@ -407,13 +424,32 @@ def main() -> int:
     run_id = uuid.uuid4().hex[:8]
     conversation_id = f"txn-smoke-{run_id}"
     trace_id = f"trace-{run_id}"
-    print(f"Connecting to MQTT broker {args.host}:{args.port} (anonymous transaction smoke)")
+    scheme = "mqtts" if args.tls else "mqtt"
+    print(f"Connecting to MQTT broker {scheme}://{args.host}:{args.port} (anonymous transaction smoke)")
     print(f"run_id={run_id}, conversation_id={conversation_id}")
 
     received_a: list[tuple[str, str]] = []
     received_b: list[tuple[str, str]] = []
-    client_a = _make_client("a", BOT_A_ID, received_a, run_id=run_id, qos=args.qos)
-    client_b = _make_client("b", BOT_B_ID, received_b, run_id=run_id, qos=args.qos)
+    client_a = _make_client(
+        "a",
+        BOT_A_ID,
+        received_a,
+        run_id=run_id,
+        qos=args.qos,
+        use_tls=args.tls,
+        ca_file=args.ca_file,
+        tls_insecure=args.tls_insecure,
+    )
+    client_b = _make_client(
+        "b",
+        BOT_B_ID,
+        received_b,
+        run_id=run_id,
+        qos=args.qos,
+        use_tls=args.tls,
+        ca_file=args.ca_file,
+        tls_insecure=args.tls_insecure,
+    )
 
     client_a.connect(args.host, args.port, keepalive=20)
     client_b.connect(args.host, args.port, keepalive=20)

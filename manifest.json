@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "description": "Bot-to-bot private relay over MQTT for Neo-MoFox",
   "author": "MoFox Team",
+  "categories": [
+    "chat"
+  ],
+  "tags": [
+    "mqtt",
+    "relay",
+    "bot-to-bot",
+    "tls"
+  ],
   "dependencies": {
     "plugins": [],
     "components": []

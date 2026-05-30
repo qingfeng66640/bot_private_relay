@@ -8,21 +8,25 @@ Usage::
 
     python plugins/bot_private_relay/scripts/mqtt_smoke_social.py
 
-Default broker: ``mqtt://8.163.34.70:1883`` (anonymous test).
-Override with ``RELAY_MQTT_HOST`` / ``RELAY_MQTT_PORT`` env vars if needed.
+Default broker: ``mqtts://mqtt.epieikeia216.cn:8883`` (anonymous test).
+Override with ``RELAY_MQTT_HOST`` / ``RELAY_MQTT_PORT`` / ``RELAY_MQTT_TLS``
+env vars if needed.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import ssl
 import sys
 import time
 import uuid
 from typing import Any
 
-DEFAULT_HOST = os.environ.get("RELAY_MQTT_HOST", "8.163.34.70")
-DEFAULT_PORT = int(os.environ.get("RELAY_MQTT_PORT", "1883"))
+DEFAULT_HOST = os.environ.get("RELAY_MQTT_HOST", "mqtt.epieikeia216.cn")
+DEFAULT_PORT = int(os.environ.get("RELAY_MQTT_PORT", "8883"))
+DEFAULT_TLS = os.environ.get("RELAY_MQTT_TLS", "1").lower() not in {"0", "false", "no", "off"}
+DEFAULT_CA_FILE = os.environ.get("RELAY_MQTT_CA_FILE", "")
 
 BOT_A_ID = "223123"
 BOT_A_NAME = "清风"
@@ -82,7 +86,14 @@ def _social_payload(
     )
 
 
-def _make_client(role: str, bot_id: str, received: list[tuple[str, str]]) -> Any:
+def _make_client(
+    role: str,
+    bot_id: str,
+    received: list[tuple[str, str]],
+    *,
+    use_tls: bool,
+    ca_file: str,
+) -> Any:
     """Create a paho-mqtt client with v2 callbacks."""
 
     import paho.mqtt.client as mqtt
@@ -93,6 +104,8 @@ def _make_client(role: str, bot_id: str, received: list[tuple[str, str]]) -> Any
         clean_session=True,
         protocol=mqtt.MQTTv311,
     )
+    if use_tls:
+        client.tls_set_context(ssl.create_default_context(cafile=ca_file or None))
 
     def on_connect(
         c: Any,
@@ -134,11 +147,12 @@ def main() -> int:
         print(f"paho-mqtt not installed: {exc}")
         return 2
 
-    print(f"Connecting to MQTT broker {DEFAULT_HOST}:{DEFAULT_PORT} (anonymous test)")
+    scheme = "mqtts" if DEFAULT_TLS else "mqtt"
+    print(f"Connecting to MQTT broker {scheme}://{DEFAULT_HOST}:{DEFAULT_PORT} (anonymous test)")
     received_a: list[tuple[str, str]] = []
     received_b: list[tuple[str, str]] = []
-    client_a = _make_client("a", BOT_A_ID, received_a)
-    client_b = _make_client("b", BOT_B_ID, received_b)
+    client_a = _make_client("a", BOT_A_ID, received_a, use_tls=DEFAULT_TLS, ca_file=DEFAULT_CA_FILE)
+    client_b = _make_client("b", BOT_B_ID, received_b, use_tls=DEFAULT_TLS, ca_file=DEFAULT_CA_FILE)
 
     client_a.connect(DEFAULT_HOST, DEFAULT_PORT, keepalive=20)
     client_b.connect(DEFAULT_HOST, DEFAULT_PORT, keepalive=20)
