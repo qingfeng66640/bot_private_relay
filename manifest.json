@@ -1,126 +1,126 @@
 {
-  "name": "bot_private_relay",
-  "version": "0.1.0",
-  "description": "Bot-to-bot private relay over MQTT for Neo-MoFox",
-  "author": "MoFox Team",
-  "categories": [
-    "chat"
-  ],
-  "tags": [
-    "mqtt",
-    "relay",
-    "bot-to-bot",
-    "tls"
-  ],
-  "dependencies": {
-    "plugins": [],
-    "components": []
-  },
-  "python_dependencies": [
-    "paho-mqtt>=2.0"
-  ],
-  "include": [
-    {
-      "component_type": "adapter",
-      "component_name": "bot_relay",
-      "dependencies": []
+    "name": "bot_private_relay",
+    "version": "0.1.1",
+    "description": "基于 MQTT 的 Neo-MoFox bot 私有中继插件，支持跨 bot 私聊、社交联系、事务协商、在线状态和待办投影。",
+    "author": "MoFox Team",
+    "categories": [
+        "chat"
+    ],
+    "tags": [
+        "mqtt",
+        "relay",
+        "bot-to-bot",
+        "tls"
+    ],
+    "dependencies": {
+        "plugins": [],
+        "components": []
     },
-    {
-      "component_type": "chatter",
-      "component_name": "bot_relay_chatter",
-      "dependencies": []
-    },
-    {
-      "component_type": "action",
-      "component_name": "send_text",
-      "dependencies": []
-    },
-    {
-      "component_type": "action",
-      "component_name": "pass_and_wait",
-      "dependencies": []
-    },
-    {
-      "component_type": "action",
-      "component_name": "stop_conversation",
-      "dependencies": []
-    },
-    {
-      "component_type": "tool",
-      "component_name": "accept_transaction",
-      "dependencies": []
-    },
-    {
-      "component_type": "tool",
-      "component_name": "confirm_transaction",
-      "dependencies": []
-    },
-    {
-      "component_type": "tool",
-      "component_name": "decline_transaction",
-      "dependencies": []
-    },
-    {
-      "component_type": "tool",
-      "component_name": "cancel_transaction",
-      "dependencies": []
-    },
-    {
-      "component_type": "tool",
-      "component_name": "reschedule_transaction",
-      "dependencies": []
-    },
-    {
-      "component_type": "tool",
-      "component_name": "ack_transaction",
-      "dependencies": []
-    },
-    {
-      "component_type": "tool",
-      "component_name": "close_transaction",
-      "dependencies": []
-    },
-    {
-      "component_type": "tool",
-      "component_name": "relay_social_contact",
-      "dependencies": []
-    },
-    {
-      "component_type": "event_handler",
-      "component_name": "loop_guard",
-      "dependencies": []
-    },
-    {
-      "component_type": "event_handler",
-      "component_name": "group_reply_suppression",
-      "dependencies": []
-    },
-    {
-      "component_type": "command",
-      "component_name": "relay",
-      "dependencies": []
-    },
-    {
-      "component_type": "service",
-      "component_name": "relay_state",
-      "dependencies": []
-    },
-    {
-      "component_type": "service",
-      "component_name": "relay_proactive",
-      "dependencies": []
-    },
-    {
-      "component_type": "service",
-      "component_name": "relay_memory_bridge",
-      "dependencies": []
-    },
-    {
-      "component_type": "router",
-      "component_name": "bot_private_relay",
-      "dependencies": []
-    }
-  ],
-  "entry_point": "plugin.py",
-  "min_core_version": "1.0.0"
+    "python_dependencies": [
+        "paho-mqtt>=2.0"
+    ],
+    "include": [
+        {
+            "component_type": "adapter",
+            "component_name": "bot_relay",
+            "dependencies": []
+        },
+        {
+            "component_type": "chatter",
+            "component_name": "bot_relay_chatter",
+            "dependencies": []
+        },
+        {
+            "component_type": "action",
+            "component_name": "send_text",
+            "dependencies": []
+        },
+        {
+            "component_type": "action",
+            "component_name": "pass_and_wait",
+            "dependencies": []
+        },
+        {
+            "component_type": "action",
+            "component_name": "stop_conversation",
+            "dependencies": []
+        },
+        {
+            "component_type": "tool",
+            "component_name": "accept_transaction",
+            "dependencies": []
+        },
+        {
+            "component_type": "tool",
+            "component_name": "confirm_transaction",
+            "dependencies": []
+        },
+        {
+            "component_type": "tool",
+            "component_name": "decline_transaction",
+            "dependencies": []
+        },
+        {
+            "component_type": "tool",
+            "component_name": "cancel_transaction",
+            "dependencies": []
+        },
+        {
+            "component_type": "tool",
+            "component_name": "reschedule_transaction",
+            "dependencies": []
+        },
+        {
+            "component_type": "tool",
+            "component_name": "ack_transaction",
+            "dependencies": []
+        },
+        {
+            "component_type": "tool",
+            "component_name": "close_transaction",
+            "dependencies": []
+        },
+        {
+            "component_type": "tool",
+            "component_name": "relay_social_contact",
+            "dependencies": []
+        },
+        {
+            "component_type": "event_handler",
+            "component_name": "loop_guard",
+            "dependencies": []
+        },
+        {
+            "component_type": "event_handler",
+            "component_name": "group_reply_suppression",
+            "dependencies": []
+        },
+        {
+            "component_type": "command",
+            "component_name": "relay",
+            "dependencies": []
+        },
+        {
+            "component_type": "service",
+            "component_name": "relay_state",
+            "dependencies": []
+        },
+        {
+            "component_type": "service",
+            "component_name": "relay_proactive",
+            "dependencies": []
+        },
+        {
+            "component_type": "service",
+            "component_name": "relay_memory_bridge",
+            "dependencies": []
+        },
+        {
+            "component_type": "router",
+            "component_name": "bot_private_relay",
+            "dependencies": []
+        }
+    ],
+    "entry_point": "plugin.py",
+    "min_core_version": "1.0.0"
 }
