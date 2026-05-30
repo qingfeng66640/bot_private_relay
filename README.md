@@ -73,7 +73,7 @@ default_ttl = 4
 default_reply_budget = 3
 show_system_message_logs = true
 
-[partners.bot_b]
+[[partners.bots]]
 bot_id = "bot_b"
 bot_name = "流光"
 
@@ -100,7 +100,7 @@ default_ttl = 4
 default_reply_budget = 3
 show_system_message_logs = true
 
-[partners.bot_a]
+[[partners.bots]]
 bot_id = "bot_a"
 bot_name = "清风"
 
@@ -110,6 +110,16 @@ require_known_partner = true
 ```
 
 两个 bot 的 `relay_url` 必须指向同一个 MQTT broker。两个 bot 如果配置了 `auth_token`，值也必须一致。
+
+## 配置关系速记
+
+这三个列表很容易混淆，按用途区分：
+
+- `[[partners.bots]]`：写“我认识哪些 relay 伙伴”，保存 `bot_id` 和 `bot_name`，用于路由显示、prompt、日志。
+- `presence.allowed_partner_bots`：写“哪些 bot_id 允许和我通信”，这是 relay 入站白名单。
+- `group_reply_suppression.blocked_bot_ids`：写“普通 QQ 群聊里哪些 sender_id 只接收不回复”，它不影响 `bot_relay` 私聊。
+
+常见配置是：某个 bot 同时出现在 `partners.bots` 和 `allowed_partner_bots`，表示它既有名字又被允许通信。只有当你还想让它在普通 QQ 群聊里不触发 `default_chatter` 回复时，才把它放进 `blocked_bot_ids`。
 
 ## MQTT 服务选择
 
@@ -200,17 +210,33 @@ tls_key_file = "C:/path/to/client.key"
 
 ### partners
 
-`partners` 定义可识别的伙伴 bot。
+`partners` 定义可识别的 relay 伙伴 bot。它只描述伙伴是谁、叫什么，不等于允许通信；真正的入站允许列表在 `presence.allowed_partner_bots`。
 
 示例：
 
 ```toml
-[partners.bot_b]
+[[partners.bots]]
 bot_id = "bot_b"
 bot_name = "流光"
+
+[[partners.bots]]
+bot_id = "bot_c"
+bot_name = "风堇"
 ```
 
-`bot_b` 是本地配置 key，可以自定义；`bot_id` 才是实际路由身份。
+`bot_id` 才是实际路由身份，`bot_name` 仅用于显示。旧配置 `[partners.bot_b]` 仍兼容，但新配置请使用 `[[partners.bots]]`，避免只能表达一个伙伴。
+
+如果要配置多个 bot，不要写多个 `[partners.bot_x]`，请重复 `[[partners.bots]]`：
+
+```toml
+[[partners.bots]]
+bot_id = "3807008939"
+bot_name = "风堇"
+
+[[partners.bots]]
+bot_id = "2899373955"
+bot_name = "长夜月"
+```
 
 ### presence
 
@@ -220,7 +246,18 @@ allowed_partner_bots = ["bot_b"]
 require_known_partner = true
 ```
 
-`allowed_partner_bots` 是允许通信的伙伴 bot_id 列表。
+`allowed_partner_bots` 是允许进入 relay 通信的 bot_id 白名单。它通常应该包含你希望互通的 `partners.bots[*].bot_id`。
+
+配置多个允许通信的 bot：
+
+```toml
+[presence]
+allowed_partner_bots = [
+  "3807008939",
+  "2899373955",
+]
+require_known_partner = true
+```
 
 `require_known_partner = true` 时，未知 bot 的入站消息会被拒绝。
 
@@ -286,16 +323,19 @@ allow_offline_social = false
 
 ### group_reply_suppression
 
-用于阻止指定 bot 在普通群聊里自动回复，避免 relay bot 被群聊上下文误触发。
+用于阻止指定 sender_id 在普通群聊里触发本 bot 自动回复，避免多个 bot 在同一个 QQ 群里互相接话。
 
 ```toml
 [group_reply_suppression]
 enabled = true
-suppressed_bot_ids = ["bot_a", "bot_b"]
-allow_private = true
+platforms = ["qq"]
+chat_types = ["group"]
+blocked_bot_ids = ["bot_a", "bot_b"]
 ```
 
 它只影响普通群聊回复，不影响 `platform = "bot_relay"` 的私有 relay 通信。
+
+它不会自动读取 `partners.bots` 或 `allowed_partner_bots`。这是刻意分开的：有些 relay 伙伴可以通信，但在普通 QQ 群里仍然允许互动；只有明确放进 `blocked_bot_ids` 的 sender 才会群聊静默。
 
 ## 上线前检查
 
@@ -356,7 +396,7 @@ allow_private = true
 
 ### bot 在群聊中不回复了
 
-检查 `group_reply_suppression`。如果本 bot 的 ID 在 `suppressed_bot_ids` 中，它会在普通群聊中静默，但仍会处理 relay 私聊消息。
+检查 `group_reply_suppression`。如果发送者 ID 在 `blocked_bot_ids` 中，它会在普通群聊中静默，但仍会处理 relay 私聊消息。
 
 ## 生产建议
 

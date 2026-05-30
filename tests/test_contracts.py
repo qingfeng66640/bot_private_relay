@@ -161,6 +161,34 @@ def test_config_partner_lookup_uses_bot_id() -> None:
     assert config.first_allowed_partner() is partner
 
 
+def test_config_partner_list_supports_multiple_bots() -> None:
+    config = BotPrivateRelayConfig()
+    config.partners.bots = [
+        PartnerSection(bot_id="114514", bot_name="流光"),
+        PartnerSection(bot_id="1919810", bot_name="风堇"),
+    ]
+    config.presence.allowed_partner_bots = ["1919810", "114514"]
+
+    partners = config.iter_partners()
+
+    assert [partner.bot_id for partner in partners] == ["114514", "1919810"]
+    assert config.partner_by_id("1919810") is partners[1]
+    assert config.first_allowed_partner() is partners[1]
+
+
+def test_config_partner_list_keeps_legacy_bot_b_compatibility() -> None:
+    config = build_config()
+    config.partners.bots = [
+        PartnerSection(bot_id="114514", bot_name="duplicate ignored"),
+        PartnerSection(bot_id="1919810", bot_name="风堇"),
+    ]
+
+    partners = config.iter_partners()
+
+    assert [partner.bot_id for partner in partners] == ["114514", "1919810"]
+    assert config.partner_by_id("114514").bot_name == "流光"
+
+
 def test_config_social_quota_lookup_uses_partner_slot() -> None:
     config = build_config()
     quota = config.social_quota_by_id("114514")

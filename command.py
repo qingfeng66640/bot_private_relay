@@ -119,12 +119,9 @@ class RelayCommand(BaseCommand):
 
         partners: list[str] = []
         config = getattr(self.plugin, "config", None)
-        if config is not None and hasattr(config, "partners"):
-            for value in vars(config.partners).values():
-                bot_id = getattr(value, "bot_id", "")
-                bot_name = getattr(value, "bot_name", "")
-                if bot_id:
-                    partners.append(f"{bot_name or 'unknown'}({bot_id})")
+        if isinstance(config, BotPrivateRelayConfig):
+            for partner in config.iter_partners():
+                partners.append(f"{partner.bot_name or 'unknown'}({partner.bot_id})")
         return True, "relay partners: " + ", ".join(partners)
 
     @cmd_route("export")

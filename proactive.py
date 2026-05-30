@@ -574,11 +574,8 @@ def _resolve_model_set(*task_names: str) -> tuple[str, object | None]:
 
 def _configured_partners(config: BotPrivateRelayConfig) -> list[PartnerSection]:
     """返回所有已配置的伙伴 bot（过滤掉 bot_id 为空的）。"""
-    partners: list[PartnerSection] = []
-    for value in vars(config.partners).values():
-        if isinstance(value, PartnerSection) and value.bot_id:
-            partners.append(value)
-    return partners
+
+    return config.iter_partners()
 
 
 def _partner_sort_key(config: BotPrivateRelayConfig, partner: PartnerSection, now: float) -> tuple[int, int, float]:

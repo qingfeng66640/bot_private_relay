@@ -13,15 +13,15 @@ inside the plugin directory are dev/test only.
 # 定义了插件的所有配置项，分为多个配置段（Section）：
 #
 # [relay]          - 中继基本配置（bot 身份、MQTT 连接、TLS、TTL 等）
-# [partners]       - 伙伴 bot 映射（bot_id → bot_name）
-# [presence]       - 在线状态与白名单
+# [partners]       - 已知伙伴的显示信息（bot_id → bot_name），推荐 [[partners.bots]] 多伙伴写法
+# [presence]       - 允许通信的伙伴 bot_id 白名单，决定谁能进入 relay 会话
 # [todo_bridge]    - 事务确认后桥接到 todo_plugin
 # [dynamic_social] - 动态社交联系配额
 # [proactive]      - bot 自主发起通信设置
 # [group_reply_suppression] - 群聊中静默特定 bot
 # [social_quotas]  - 每目标社交配额覆盖
 #
-# 生产部署时，配置文件位于：
+# 配置文件位于：
 #   config/plugins/bot_private_relay/config.toml
 # =============================================================================
 
@@ -72,17 +72,25 @@ class BotPrivateRelayConfig(BaseConfig):
         [relay]
         bot_id = "223123"
         bot_name = "清风"
-        relay_url = "mqtts://relay.example.com:8883"
+        relay_url = "mqtts://mqtt.example.com:8883"
         auth_token = "shared-token"
         tls_ca_file = ""
         tls_insecure = false
 
-        [partners.bot_b]
+        [[partners.bots]]
         bot_id = "114514"
         bot_name = "流光"
 
+        [[partners.bots]]
+        bot_id = "1919810"
+        bot_name = "风堇"
+
         [presence]
-        allowed_partner_bots = ["114514"]
+        allowed_partner_bots = ["114514", "1919810"]
+
+        [group_reply_suppression]
+        enabled = true
+        blocked_bot_ids = ["114514", "1919810"]
     """
 
     config_name: ClassVar[str] = "config"
@@ -114,18 +122,28 @@ class BotPrivateRelayConfig(BaseConfig):
     # =========================================================================
     @config_section("partners", title="Partners", tag="plugin")
     class PartnersSection(SectionBase):
-        """Partner mapping for local tests and simple deployments."""
+        """Partner mapping for relay deployments.
 
-        bot_b: PartnerSection = Field(default_factory=PartnerSection)
+        ``[[partners.bots]]`` is the recommended form and can be repeated for
+        multiple peers. ``bot_b`` is only retained so old single-peer config
+        files keep loading.
+        """
+
+        bot_b: PartnerSection = Field(default_factory=PartnerSection, description="兼容旧配置的单伙伴槽位；新配置请使用 bots")
+        bots: list[PartnerSection] = Field(default_factory=list, description="伙伴 bot 列表；TOML 中用 [[partners.bots]] 重复配置多个 bot")
 
     # =========================================================================
     # [presence] 配置段 - 在线状态与白名单
     # =========================================================================
     @config_section("presence", title="Presence", tag="plugin")
     class PresenceSection(SectionBase):
-        """Presence and allowlist settings."""
+        """Presence and allowlist settings.
 
-        allowed_partner_bots: list[str] = Field(default_factory=list, description="允许通信的伙伴 bot_id 列表（白名单）")
+        ``allowed_partner_bots`` is the relay access-control list. A bot can be
+        described in ``partners`` but still rejected here if its id is absent.
+        """
+
+        allowed_partner_bots: list[str] = Field(default_factory=list, description="允许进入 relay 通信的伙伴 bot_id 白名单；通常与 partners.bots 中的 bot_id 对应")
         require_known_partner: bool = Field(default=True, description="是否要求对端必须在已知伙伴列表中，关闭后允许任意 bot 通信")
 
     # =========================================================================
@@ -194,14 +212,15 @@ class BotPrivateRelayConfig(BaseConfig):
     class GroupReplySuppressionSection(SectionBase):
         """Suppress local chatter replies to configured bots in group chats.
 
-        在某些群聊中，我们只希望接收特定 bot 的消息但不回复它们。
-        此配置段指定需要静默处理的 bot ID 列表。
+        This is independent from relay partners. Add a QQ sender id here only
+        when ordinary group chat from that bot should be received but never
+        trigger default_chatter replies.
         """
 
         enabled: bool = Field(default=True, description="启用群聊 bot 静默拦截")
         platforms: list[str] = Field(default_factory=lambda: ["qq"], description="启用静默拦截的平台列表")
         chat_types: list[str] = Field(default_factory=lambda: ["group"], description="启用静默拦截的聊天类型列表")
-        blocked_bot_ids: list[str] = Field(default_factory=list, description="群聊中只接收不回复的 bot QQ 号列表")
+        blocked_bot_ids: list[str] = Field(default_factory=list, description="普通群聊中只接收不回复的 sender_id 列表；不会自动复用 partners 或 allowed_partner_bots")
 
     # =========================================================================
     # [social_quotas] 配置段 - 每目标社交配额覆盖
@@ -210,8 +229,8 @@ class BotPrivateRelayConfig(BaseConfig):
     class SocialQuotasSection(SectionBase):
         """Named per-target social quota overrides.
 
-        为特定伙伴 bot 设置独立的社交频率限制。
-        key 名称与 partners 中的 key 对应。
+        Currently only the legacy ``bot_b`` slot has a named override. Partners
+        configured through ``[[partners.bots]]`` use dynamic_social defaults.
         """
 
         bot_b: SocialQuotaSection = Field(default_factory=SocialQuotaSection)
@@ -242,10 +261,31 @@ class BotPrivateRelayConfig(BaseConfig):
             Matching partner configuration, or ``None``.
         """
 
-        for value in vars(self.partners).values():
-            if isinstance(value, PartnerSection) and value.bot_id == bot_id:
-                return value
+        target_id = str(bot_id).strip()
+        for partner in self.iter_partners():
+            if partner.bot_id == target_id:
+                return partner
         return None
+
+    def iter_partners(self) -> list[PartnerSection]:
+        """Return configured partners from ``bot_b`` and ``[[partners.bots]]``.
+
+        The legacy ``bot_b`` entry wins when the same bot_id also appears in
+        ``bots`` so existing single-partner deployments remain stable.
+        """
+
+        partners: list[PartnerSection] = []
+        seen: set[str] = set()
+        for value in [self.partners.bot_b, *self.partners.bots]:
+            if not isinstance(value, PartnerSection):
+                continue
+            bot_id = str(value.bot_id or "").strip()
+            if not bot_id or bot_id in seen:
+                continue
+            value.bot_id = bot_id
+            partners.append(value)
+            seen.add(bot_id)
+        return partners
 
     def first_allowed_partner(self) -> PartnerSection | None:
         """Return the first partner allowed by id.
@@ -266,13 +306,10 @@ class BotPrivateRelayConfig(BaseConfig):
     def social_quota_by_id(self, bot_id: str) -> SocialQuotaSection | None:
         """Return a quota override that matches a partner bot id.
 
-        根据 bot_id 查找在 social_quotas 中配置的对应配额覆盖。
-        匹配逻辑：先通过 bot_id 找到 partners 中的 key，再查找 social_quotas 中同名的 key。
+        目前只有旧的 partners.bot_b 槽位有同名配额覆盖。通过
+        [[partners.bots]] 配置的多个伙伴使用 dynamic_social 默认配额。
         """
 
-        for key, partner in vars(self.partners).items():
-            if not isinstance(partner, PartnerSection) or partner.bot_id != bot_id:
-                continue
-            quota = getattr(self.social_quotas, key, None)
-            return quota if isinstance(quota, SocialQuotaSection) else None
+        if self.partners.bot_b.bot_id == bot_id:
+            return self.social_quotas.bot_b
         return None

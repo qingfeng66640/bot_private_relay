@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from plugins.bot_private_relay import store
-from plugins.bot_private_relay.config import BotPrivateRelayConfig
+from plugins.bot_private_relay.config import BotPrivateRelayConfig, PartnerSection
 from plugins.bot_private_relay.event_handler import GroupReplySuppressionEventHandler
 from plugins.bot_private_relay.plugin import BotPrivateRelayPlugin
 from src.core.components.types import EventType
@@ -208,3 +208,11 @@ def test_manifest_and_plugin_register_group_reply_suppression_handler() -> None:
 
     assert "group_reply_suppression" in handlers
     assert GroupReplySuppressionEventHandler in BotPrivateRelayPlugin(build_config()).get_components()
+
+
+def test_group_reply_suppression_is_independent_from_relay_partners() -> None:
+    config = BotPrivateRelayConfig()
+    config.partners.bots = [PartnerSection(bot_id="3807008939", bot_name="风堇")]
+    config.presence.allowed_partner_bots = ["3807008939"]
+
+    assert config.group_reply_suppression.blocked_bot_ids == []
