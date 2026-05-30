@@ -5,6 +5,7 @@ bot_name = "清风"
 # DEV: localhost for tests.
 # PRODUCTION, plaintext broker: relay_url = "mqtt://broker.example.com:1883"
 # PRODUCTION, TLS broker: relay_url = "mqtts://broker.example.com:8883"
+# OPTIONAL author-provided TLS broker for quick tests: relay_url = "mqtts://mqtt.epieikeia216.cn"
 # mqtts:// automatically enables TLS and defaults to port 8883 when no port is set.
 relay_url = "mqtt://localhost:1883"
 
