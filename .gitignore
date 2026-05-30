@@ -6,6 +6,10 @@ __pycache__/
 
 # Dependency manager artifacts
 uv.lock
+dist/
+
+# Local development-only assets
+.dev/
 
 # IDE
 .vscode/
@@ -18,4 +22,5 @@ env/
 # 临时文件
 *.log
 *.tmp
+.dev/tests/tmp_runtime/
 tests/tmp_runtime/

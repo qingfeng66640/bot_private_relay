@@ -1,0 +1,67 @@
+[relay]
+enabled = true
+bot_id = "bot_alpha"
+bot_name = "Bot Alpha"
+relay_url = "mqtts://broker.example.com:8883"
+auth_token = "replace-with-a-long-random-shared-token"
+tls_enabled = false
+tls_ca_file = ""
+tls_cert_file = ""
+tls_key_file = ""
+tls_insecure = false
+default_ttl = 4
+default_reply_budget = 3
+show_system_message_logs = true
+
+[partners]
+
+[[partners.bots]]
+bot_id = "bot_beta"
+bot_name = "Bot Beta"
+
+[presence]
+allowed_partner_bots = ["bot_beta"]
+require_known_partner = true
+
+[todo_bridge]
+enabled = true
+event_name = "bot_relay.todo_decided"
+max_retries = 2
+retry_backoff_seconds = 0.1
+fail_transaction_on_unavailable = true
+
+[dynamic_social]
+enabled = true
+default_allow_all_bots = true
+impulse_enabled = true
+event_triggers_enabled = true
+user_command_triggers_enabled = true
+default_max_per_day = 5
+default_max_per_hour = 2
+default_cooldown_seconds = 300
+
+[proactive]
+enabled = false
+check_interval_seconds = 300
+max_per_hour = 3
+cooldown_seconds = 300
+transaction_enabled = false
+social_enabled = true
+allow_offline_social = false
+decision_model_task = "sub_actor"
+message_model_task = "actor"
+decision_retry_interval_seconds = 1.0
+chat_hint_snapshot_items = 20
+
+[group_reply_suppression]
+enabled = true
+platforms = ["qq"]
+chat_types = ["group"]
+blocked_bot_ids = []
+
+[social_quotas]
+
+[social_quotas.bot_b]
+max_per_day = 5
+max_per_hour = 2
+cooldown_seconds = 300

@@ -20,20 +20,21 @@ from src.kernel.concurrency import get_task_manager
 from src.kernel.logger import get_logger
 
 # ── 导入所有插件组件 ──────────────────────────────────────────────────────
-from .adapter import BotRelayAdapter          # MQTT 通信适配器
-from .chatter import BotRelayChatter          # 中继对话智能体
-from .command import RelayCommand             # /relay 命令行管理
-from .config import BotPrivateRelayConfig     # 插件配置定义
-from .dynamic_social import RelaySocialContactTool, register_relay_config  # 动态社交联系
-from .event_handler import GroupReplySuppressionEventHandler, LoopGuardEventHandler  # 事件处理器
-from .memory_bridge import MemoryBridgeService  # 记忆桥接服务
-from .relay_actions import (
+from .components.actions.relay import (
     BotRelayPassAndWaitAction,                # 等待对端消息的 Action
     BotRelaySendTextAction,                   # 发送文本的 Action
     BotRelayStopConversationAction,           # 停止对话的 Action
 )
-from .router import BotPrivateRelayRouter     # HTTP 管理路由
-from .relay_tools import (
+from .components.adapters.bot_relay import BotRelayAdapter          # MQTT 通信适配器
+from .components.chatters.bot_relay import BotRelayChatter          # 中继对话智能体
+from .components.commands.relay import RelayCommand             # /relay 命令行管理
+from .components.config import BotPrivateRelayConfig     # 插件配置定义
+from .components.events.relay import GroupReplySuppressionEventHandler, LoopGuardEventHandler  # 事件处理器
+from .components.routers.bot_private_relay import BotPrivateRelayRouter     # HTTP 管理路由
+from .components.services.memory_bridge import MemoryBridgeService  # 记忆桥接服务
+from .components.services.relay import RelayProactiveService, RelayStateService  # 服务组件
+from .components.tools.dynamic_social import RelaySocialContactTool, register_relay_config  # 动态社交联系
+from .components.tools.transactions import (
     AcceptTransactionTool,                    # 接受事务 Tool
     AckTransactionTool,                       # 确认收到并关闭 Tool
     CancelTransactionTool,                    # 取消事务 Tool
@@ -42,7 +43,6 @@ from .relay_tools import (
     DeclineTransactionTool,                   # 拒绝事务 Tool
     RescheduleTransactionTool,                # 改期事务 Tool
 )
-from .service import RelayProactiveService, RelayStateService  # 服务组件
 
 logger = get_logger("bot_private_relay_plugin")
 
