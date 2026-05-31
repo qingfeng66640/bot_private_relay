@@ -1,6 +1,6 @@
 {
     "name": "bot_private_relay",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "基于 MQTT 的 Neo-MoFox bot 私有中继插件，支持跨 bot 私聊、社交联系、事务协商、在线状态和待办投影。",
     "author": "MoFox Team",
     "categories": [
