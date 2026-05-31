@@ -1,4 +1,4 @@
-"""Dynamic social quota and proactive-contact tools."""
+"""动态社交配额管理与主动联系工具。"""
 
 # =============================================================================
 # 动态社交联系模块
@@ -39,7 +39,7 @@ _REGISTERED_RELAY_CONFIG: BotPrivateRelayConfig | None = None
 
 
 def register_relay_config(config: BotPrivateRelayConfig) -> None:
-    """Expose relay config for tools invoked from other plugins.
+    """公开 relay 配置给从其他插件调用的工具。
 
     将 relay 配置注册到模块全局变量。因为 Tool 从外部插件调用时，
     无法通过 self.plugin.config 获取配置，所以需要一个全局注册机制。
@@ -53,7 +53,7 @@ def register_relay_config(config: BotPrivateRelayConfig) -> None:
 # DynamicSocialLimiter - 动态社交配额限制器
 # =============================================================================
 class DynamicSocialLimiter:
-    """Enforce per-bot proactive social quotas in runtime memory.
+    """在运行时内存中强制执行每个 bot 的主动社交配额。
 
     对每个目标 bot 的主动社交联系行为实施频率限制。
     所有限制数据存储在 store 模块的全局字典中（运行时内存），
@@ -64,7 +64,7 @@ class DynamicSocialLimiter:
         self.config = config
 
     def allow(self, *, target_bot_id: str, source: str) -> tuple[bool, str]:
-        """Consume one proactive social quota if allowed.
+        """如果允许，消耗一次主动社交配额。
 
         检查是否允许向目标 bot 发送主动社交消息。如果允许，消耗一次配额。
 
@@ -102,11 +102,10 @@ class DynamicSocialLimiter:
         if not dynamic.default_allow_all_bots and self.config.partner_by_id(target_bot_id) is None:
             return False, "target_not_allowed"
 
-        # ── 4. 加载配额配置（优先使用每目标的覆盖配置） ──
-        quota = self.config.social_quota_by_id(target_bot_id)
-        max_per_day = quota.max_per_day if quota is not None else dynamic.default_max_per_day
-        max_per_hour = quota.max_per_hour if quota is not None else dynamic.default_max_per_hour
-        cooldown_seconds = quota.cooldown_seconds if quota is not None else dynamic.default_cooldown_seconds
+        # ── 4. 加载默认配额配置 ──
+        max_per_day = dynamic.default_max_per_day
+        max_per_hour = dynamic.default_max_per_hour
+        cooldown_seconds = dynamic.default_cooldown_seconds
 
         now = time.time()
 
@@ -140,7 +139,7 @@ class DynamicSocialLimiter:
 # RelaySocialContactTool - 社交联系 Tool
 # =============================================================================
 class RelaySocialContactTool(BaseTool):
-    """Contact another bot through the relay social channel only.
+    """仅通过 relay social channel 联系另一个 bot。
 
     通过 bot_relay 的 social channel 联系另一个 bot。
     主要供 todo_plugin 在执行 bot 待办事项时使用。
@@ -162,7 +161,7 @@ class RelaySocialContactTool(BaseTool):
         conversation_id: Annotated[str, "可选：沿用来源 relay 事务的 conversation_id"] = "",
         trace_id: Annotated[str, "可选：沿用来源 relay 事务的 trace_id"] = "",
     ) -> tuple[bool, str]:
-        """Send a proactive social message to a target bot.
+        """向目标 bot 发送主动社交消息。
 
         执行流程：
         1. 获取配置（从 self.plugin.config 或全局注册的 _REGISTERED_RELAY_CONFIG）
@@ -244,7 +243,7 @@ class RelaySocialContactTool(BaseTool):
 
     @staticmethod
     def _source_from_reason(reason: str) -> str:
-        """Map free-form reasons to quota source buckets.
+        """将自由文本的原因映射到配额来源桶。
 
         将自由文本的原因映射到配额来源桶。
         - impulse / internal → "impulse"

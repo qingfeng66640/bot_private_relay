@@ -1,7 +1,6 @@
-"""System-channel short-path handling.
+"""系统通道短路处理。
 
-This module is an internal helper and is intentionally not a standalone
-registered component.
+本模块是内部辅助模块，刻意不作为独立的注册组件。
 """
 
 # =============================================================================
@@ -25,13 +24,13 @@ from .presence import PresenceManager
 
 
 class SystemChannelHandler:
-    """Handle relay system envelopes without entering LLM flow."""
+    """处理中继系统信封，不进入 LLM 流程。"""
 
     def __init__(self, presence_manager: PresenceManager) -> None:
         self.presence_manager = presence_manager
 
     def handle(self, envelope: RelayEnvelope) -> bool:
-        """Handle system envelope.
+        """处理系统信封。
 
         处理系统信道的消息。返回 True 表示消息被消费，不需要进一步处理。
 
@@ -40,7 +39,7 @@ class SystemChannelHandler:
         - 其他系统意图（cancel/close/error/ack/heartbeat/typing）：记录审计日志
 
         Returns:
-            ``True`` if the envelope was consumed by the system short path.
+            如果信封被系统短路路径消费，返回 ``True``。
         """
 
         if envelope.channel != "system":

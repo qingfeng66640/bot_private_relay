@@ -1,4 +1,4 @@
-"""Stateless service wrappers for relay state."""
+"""中继状态的无状态服务包装器。"""
 
 # =============================================================================
 # 服务组件模块
@@ -28,17 +28,17 @@ from ..config import BotPrivateRelayConfig
 
 
 class RelayStateService(BaseService):
-    """Expose relay state without owning any instance-local runtime state.
+    """对外暴露中继状态，自身不持有任何实例级运行时状态。
 
     此服务自身不持有状态，所有数据从模块级 store 中读取。
     """
 
     service_name = "relay_state"
-    service_description = "Bot private relay state access"
+    service_description = "Bot 私有中继运行状态查询"
     version = "0.1.0"
 
     def presence_snapshot(self) -> dict[str, store.PresenceRecord]:
-        """Return current presence table.
+        """返回当前在线状态表。
 
         返回当前所有已知伙伴 bot 的在线状态快照。
         key 为 bot_id，value 为 PresenceRecord。
@@ -47,7 +47,7 @@ class RelayStateService(BaseService):
         return dict(store.PRESENCE_TABLE)
 
     def session_snapshot(self) -> dict[str, store.RelaySession]:
-        """Return current session table.
+        """返回当前会话表。
 
         返回当前所有活跃的 relay 会话快照。
         key 为 conversation_id，value 为 RelaySession。
@@ -56,7 +56,7 @@ class RelayStateService(BaseService):
         return dict(store.SESSION_TABLE)
 
     def memory_candidate_snapshot(self) -> dict[str, store.RelayMemoryCandidate]:
-        """Return projected memory candidates.
+        """返回投影的记忆候选。
 
         返回 relay 对话中产生的记忆候选。
         """
@@ -64,7 +64,7 @@ class RelayStateService(BaseService):
         return dict(store.RELAY_MEMORY_CANDIDATES)
 
     def audit_snapshot(self) -> list[dict[str, object]]:
-        """Return audit log snapshot.
+        """返回审计日志快照。
 
         返回审计日志的快照列表。
         每条日志包含 event、time 及调用方传入的自定义字段。
@@ -73,7 +73,7 @@ class RelayStateService(BaseService):
         return list(store.AUDIT_LOG)
 
     def transaction_log_snapshot(self) -> dict[str, store.RelayTransactionRecord]:
-        """Return transaction log snapshot.
+        """返回事务日志快照。
 
         返回事务日志快照，记录了每个事务的状态变化历史。
         """
@@ -81,13 +81,12 @@ class RelayStateService(BaseService):
         return dict(store.TRANSACTION_LOG)
 
     def export_debug_snapshot(self, output_dir: str | Path) -> Path:
-        """Persist a plugin-local debug snapshot.
+        """持久化插件本地调试快照。
 
         将当前插件的完整运行状态导出为 JSON 文件，用于离线调试。
         导出内容包括：presence、sessions、transactions、memory_candidates、audit。
 
-        This is a plugin-local optional persistence helper only. It does not
-        replace future framework-approved persistence paths.
+        这只是一个插件本地的可选持久化辅助工具。不会取代未来框架批准的持久化路径。
         """
 
         path = Path(output_dir)
@@ -113,18 +112,18 @@ class RelayStateService(BaseService):
 
 
 class RelayProactiveService(BaseService):
-    """Run proactive relay ticks without owning runtime state.
+    """执行主动中继 tick，不持有运行时状态。
 
     封装 proactive 决策的执行入口。
     不持有状态，每次 tick 从配置中读取参数并执行完整的决策→生成→发送流程。
     """
 
     service_name = "relay_proactive"
-    service_description = "Bot private relay proactive initiation"
+    service_description = "Bot 私有中继主动通信调度"
     version = "0.1.0"
 
     async def tick(self) -> bool:
-        """Run one proactive decision cycle.
+        """运行一次主动决策周期。
 
         执行一次完整的主动通信决策周期：
         1. 构建系统状态快照

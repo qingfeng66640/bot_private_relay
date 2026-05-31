@@ -1,4 +1,4 @@
-"""Presence tracking and allowlist checks."""
+"""在线状态追踪和白名单校验。"""
 
 # =============================================================================
 # PresenceManager - 在线状态管理
@@ -23,13 +23,13 @@ from ..components.config import BotPrivateRelayConfig
 
 
 class PresenceManager:
-    """Manage partner presence using module-level state."""
+    """使用模块级状态管理伙伴在线状态。"""
 
     def __init__(self, config: BotPrivateRelayConfig) -> None:
         self.config = config
 
     def is_allowed(self, bot_id: str) -> bool:
-        """Return whether a bot id is allowed.
+        """检查 bot_id 是否允许通信。
 
         白名单校验逻辑：
         - 如果配置不要求已知伙伴（require_known_partner=False），任何 bot 都允许
@@ -41,7 +41,7 @@ class PresenceManager:
         return bot_id in self.config.presence.allowed_partner_bots
 
     def update_from_envelope(self, envelope: RelayEnvelope) -> None:
-        """Update presence from a system envelope.
+        """从系统信封中更新在线状态。
 
         当收到 presence_update 系统消息时，更新对应伙伴的在线状态记录。
         记录内容包括：bot_id、bot_name、状态（online/offline）、最后在线时间。
@@ -59,7 +59,7 @@ class PresenceManager:
         )
 
     def build_presence_envelope(self, *, status: str) -> RelayEnvelope:
-        """Build a local presence envelope.
+        """构建本机在线状态信封。
 
         构建本机在线状态的信封，用于：
         1. MQTT 连接时的上线通知（status="online"）

@@ -1,4 +1,4 @@
-"""Event handlers for bot private relay."""
+"""bot 私有中继的事件处理器。"""
 
 # =============================================================================
 # 事件处理器模块
@@ -33,7 +33,7 @@ from ..config import BotPrivateRelayConfig
 
 
 def _normalized_set(values: list[str]) -> set[str]:
-    """Return non-empty lower-case values for config matching.
+    """返回去空格、小写化且非空的配置匹配值集合。
 
     将配置列表中的字符串标准化（去空格、转小写、去空值），
     用于平台名和聊天类型的模糊匹配。
@@ -43,7 +43,7 @@ def _normalized_set(values: list[str]) -> set[str]:
 
 
 def _message_exists_in_history(context: Any, message: Message) -> bool:
-    """Return whether the message is already present in stream history.
+    """判断消息是否已存在于会话流的历史记录中。
 
     检查消息是否已经在聊天流的历史消息列表中（防止重复添加）。
     """
@@ -56,7 +56,7 @@ def _message_exists_in_history(context: Any, message: Message) -> bool:
 
 
 def _add_history_once(context: Any, message: Message) -> None:
-    """Move a suppressed message into history without duplicating it.
+    """将被静默的消息移入历史记录，若已存在则跳过。
 
     将被静默的消息移入历史记录。如果消息已存在则跳过（防重复）。
     这样消息仍然可见，但不会触发 Chatter 的回复逻辑。
@@ -73,20 +73,20 @@ def _add_history_once(context: Any, message: Message) -> None:
 # LoopGuardEventHandler - 循环守卫
 # =============================================================================
 class LoopGuardEventHandler(BaseEventHandler):
-    """Protect relay flows against loops and outbound leakage.
+    """防护 relay 流程免受循环和出站泄漏的影响。
 
     核心职责：防止 relay 消息进入无限循环、消息泄漏到非 bot_relay 平台。
     拦截 ON_MESSAGE_RECEIVED 和 ON_MESSAGE_SENT 两个事件。
     """
 
     handler_name = "loop_guard"
-    handler_description = "Loop guard for bot private relay"
+    handler_description = "Bot 私有中继循环保护"
     weight = 200                     # 权重 200，中等优先级
     intercept_message = True         # 可拦截消息
     init_subscribe = [EventType.ON_MESSAGE_RECEIVED, EventType.ON_MESSAGE_SENT]
 
     async def execute(self, event_name: str, params: dict[str, Any]) -> tuple[EventDecision, dict[str, Any]]:
-        """Validate relay messages while preserving param keys.
+        """对 relay 消息进行校验，同时保留参数键。
 
         根据事件类型分发到不同的处理器。
         """
@@ -185,7 +185,7 @@ class LoopGuardEventHandler(BaseEventHandler):
         return EventDecision.STOP, params
 
     def _record_proactive_chat_hint(self, message: Message) -> None:
-        """Record ordinary chat messages as proactive decision context.
+        """将普通聊天消息记录为 proactive 决策的上下文线索。
 
         将普通聊天消息记录为 proactive 决策的上下文线索。
         proactive 系统使用这些线索来判断是否有合适的时机主动联系伙伴 bot。
@@ -221,7 +221,7 @@ class LoopGuardEventHandler(BaseEventHandler):
 
     @staticmethod
     def _set_continue_send(params: dict[str, Any], value: bool) -> None:
-        """Update continue_send without changing the event param signature.
+        """更新 continue_send 标志，不修改事件参数签名。
 
         设置 continue_send 标志，控制是否继续发送流程。
         """
@@ -234,7 +234,7 @@ class LoopGuardEventHandler(BaseEventHandler):
 # GroupReplySuppressionEventHandler - 群聊静默
 # =============================================================================
 class GroupReplySuppressionEventHandler(BaseEventHandler):
-    """Receive configured bot messages in groups without triggering replies.
+    """在群聊中接收已配置 bot 的消息，但不触发自动回复。
 
     在某些群聊场景中，我们希望接收特定 bot 的消息，但不触发自动回复。
     此处理器在 Chatter 处理消息前将其从 unread_messages 中移除。
@@ -243,13 +243,13 @@ class GroupReplySuppressionEventHandler(BaseEventHandler):
     """
 
     handler_name = "group_reply_suppression"
-    handler_description = "Suppress default chatter replies to configured group bot senders"
+    handler_description = "静默群聊中指定 bot 发来的消息，避免多个 bot 互相触发"
     weight = 300                     # 权重 300，高优先级（在 Chatter 处理前执行）
     intercept_message = False        # 不拦截消息（消息仍会被处理，只是不触发回复）
     init_subscribe = [EventType.ON_CHATTER_STEP]  # 在 Chatter 执行步骤时触发
 
     async def execute(self, event_name: str, params: dict[str, Any]) -> tuple[EventDecision, dict[str, Any]]:
-        """Filter blocked bot messages before chatter consumes unread messages.
+        """在 Chatter 消费未读消息前，过滤掉需要静默的 bot 消息。
 
         执行逻辑：
         1. 读取配置中的 block_bot_ids 列表
@@ -326,7 +326,7 @@ class GroupReplySuppressionEventHandler(BaseEventHandler):
         chat_types: set[str],
         blocked_bot_ids: set[str],
     ) -> bool:
-        """Return whether the message should be removed before chatter execution.
+        """判断消息是否应在 Chatter 执行前被移除。
 
         判断条件（全部满足才静默）：
         1. 消息平台在启用列表中

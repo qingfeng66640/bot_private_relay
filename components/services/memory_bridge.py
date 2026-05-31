@@ -1,4 +1,4 @@
-"""Memory-candidate projection for relay messages."""
+"""用于中继消息的记忆候选投影。"""
 
 # =============================================================================
 # MemoryBridgeService - 记忆候选桥接服务
@@ -20,18 +20,18 @@ from ...runtime import store
 
 
 class MemoryBridgeService(BaseService):
-    """Expose projected memory candidates within plugin boundary only.
+    """仅在插件边界内对外暴露投影的记忆候选。
 
     服务名：relay_memory_bridge
     用途：对外暴露 relay 对话中产生的记忆候选数据，供其他插件或框架组件读取。
     """
 
     service_name = "relay_memory_bridge"
-    service_description = "Bot private relay memory bridge"
+    service_description = "Bot 私有中继记忆候选桥接"
     version = "0.1.0"
 
     def list_candidates(self) -> dict[str, store.RelayMemoryCandidate]:
-        """Return projected memory candidates.
+        """返回投影的记忆候选。
 
         返回当前所有的记忆候选。调用方可以遍历这些候选，
         决定哪些值得长期存储。

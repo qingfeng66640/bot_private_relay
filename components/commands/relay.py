@@ -36,14 +36,14 @@ from ..tools.dynamic_social import DynamicSocialLimiter
 
 
 class RelayCommand(BaseCommand):
-    """Command entrypoint for ``/relay`` management."""
+    """``/relay`` 管理命令入口。"""
 
     command_name = "relay"
-    command_description = "Inspect and manually test bot private relay runtime"
+    command_description = "查看和手动测试 bot 私有中继运行状态"
     permission_level = PermissionLevel.OWNER  # 仅 Bot 拥有者可用
 
     async def execute(self, message_text: str) -> tuple[bool, str]:
-        """Execute relay commands, preserving free-form send text.
+        """执行 relay 命令，保留自由格式的发送文本。
 
         命令分发逻辑：
         1. 如果文本以 command_prefix 或 command_name 开头 → 格式错误（此方法只接受剥离后的子路由）
@@ -210,7 +210,7 @@ class RelayCommand(BaseCommand):
         return service.session_snapshot()
 
     async def _execute_send_command(self, verb: str, rest: str) -> tuple[bool, str]:
-        """Parse raw send command text and dispatch it.
+        """解析原始发送命令文本并分发。
 
         解析用户输入的命令文本，提取可选的 target_bot_id 和消息正文。
 
@@ -247,7 +247,7 @@ class RelayCommand(BaseCommand):
         text: str,
         target_bot_id: str | None,
     ) -> tuple[bool, str]:
-        """Send a manual relay message through the normal MessageSender path.
+        """通过标准 MessageSender 路径发送手动 relay 消息。
 
         通过标准的 MessageSender → Adapter 路径发送 relay 消息。
         这是手动命令触发的消息，不是 LLM 自动生成的。
@@ -331,7 +331,7 @@ class RelayCommand(BaseCommand):
         return True, f"relay {intent} sent to {partner.bot_name or 'unknown'}({partner.bot_id}): {text}"
 
     async def _send_result_to_invoker(self, result_text: str) -> None:
-        """Send command result text back to the original invoking platform.
+        """将命令执行结果文本发送回原始调用平台。
 
         将命令执行结果发送回原始调用平台（如 QQ）。
         支持私聊和群聊两种场景。
@@ -362,7 +362,7 @@ class RelayCommand(BaseCommand):
         await get_message_sender().send_message(response)
 
     def _relay_config(self) -> BotPrivateRelayConfig | None:
-        """Return typed plugin config if available."""
+        """返回类型化的插件配置（如果可用）。"""
 
         config = getattr(self.plugin, "config", None)
         return config if isinstance(config, BotPrivateRelayConfig) else None
@@ -372,7 +372,7 @@ class RelayCommand(BaseCommand):
         config: BotPrivateRelayConfig,
         target_bot_id: str | None,
     ) -> tuple[PartnerSection | None, str | None]:
-        """Resolve explicit or default relay partner.
+        """解析显式或默认的 relay 伙伴。
 
         解析目标伙伴：
         - 如果指定了 target_bot_id → 按 ID 查找
@@ -392,7 +392,7 @@ class RelayCommand(BaseCommand):
 
     @staticmethod
     def _parse_send_args(rest: str) -> tuple[str | None, str]:
-        """Parse optional ``to <bot_id>`` and preserve the remaining text.
+        """解析可选的 ``to <bot_id>`` 并保留剩余文本。
 
         解析格式：
         - "to <bot_id> <text>" → (bot_id, text)
@@ -413,7 +413,7 @@ class RelayCommand(BaseCommand):
 
     @staticmethod
     def _strip_wrapping_quotes(text: str) -> str:
-        """Remove one symmetric quote pair from manually supplied text.
+        """去除用户手动添加的一对对称引号。
 
         去除用户手动添加的一对对称引号（单引号或双引号）。
         只去除一层。

@@ -1,4 +1,4 @@
-"""Autonomous proactive relay initiation."""
+"""自主主动通信中继发起模块。"""
 
 # =============================================================================
 # Proactive（主动通信）模块
@@ -63,7 +63,7 @@ _PROACTIVE_LOCK = asyncio.Lock()
 
 @dataclass(slots=True)
 class ProactiveDecision:
-    """Normalized proactive decision.
+    """标准化主动通信决策结构。
 
     从 LLM 的 JSON 输出中解析出的标准化决策结构。
     """
@@ -79,7 +79,7 @@ class ProactiveDecision:
 # =============================================================================
 
 async def run_proactive_tick(config: BotPrivateRelayConfig) -> bool:
-    """Run one proactive decision and dispatch cycle.
+    """执行一次主动通信决策和分发周期。
 
     使用全局锁防止并行 tick。
     """
@@ -97,23 +97,23 @@ async def _run_proactive_tick_locked(config: BotPrivateRelayConfig) -> bool:
     # ── 1. 配置检查 ──
     if not config.proactive.enabled:
         store.audit("proactive_tick_skipped", reason_code="proactive_disabled")
-        logger.info("Proactive tick skipped: proactive_disabled")
+        logger.info("主动通信 tick 跳过: proactive_disabled")
         return False
 
     # ── 2. 聊天线索检查 ──
     # 没有最近的普通聊天消息，说明没有合适的时机 → 跳过
     if not _has_recent_chat_hint():
         store.audit("proactive_tick_skipped", reason_code="no_recent_chat_hint")
-        logger.info("Proactive tick skipped before LLM decision: no_recent_chat_hint")
+        logger.info("主动通信 tick LLM 决策前跳过: no_recent_chat_hint")
         return False
 
     # ── 3. 解析决策模型 ──
     decision_task_name, decision_model_set = _resolve_model_set(config.proactive.decision_model_task)
     if decision_model_set is None:
         store.audit("proactive_tick_skipped", reason_code="decision_model_unavailable")
-        logger.warning(f"Proactive tick skipped: decision_model_unavailable task={config.proactive.decision_model_task}")
+        logger.warning(f"主动通信 tick 跳过: decision_model_unavailable task={config.proactive.decision_model_task}")
         return False
-    logger.info(f"Proactive decision model task resolved: {decision_task_name}")
+    logger.info(f"主动通信决策模型任务已解析: {decision_task_name}")
 
     # ── 4. 构建系统状态快照 ──
     snapshot = fit_snapshot_to_budget(decision_model_set, build_proactive_snapshot(config))
@@ -123,7 +123,7 @@ async def _run_proactive_tick_locked(config: BotPrivateRelayConfig) -> bool:
     if decision.action == "do_nothing":
         reason_code = decision.reason or "decision_do_nothing"
         store.audit("proactive_tick_skipped", reason_code=reason_code)
-        logger.info(f"Proactive tick skipped: {reason_code}")
+        logger.info(f"主动通信 tick 跳过: {reason_code}")
         return False
 
     # ── 6. 硬门禁验证 ──
@@ -136,7 +136,7 @@ async def _run_proactive_tick_locked(config: BotPrivateRelayConfig) -> bool:
             reason_code=reason_code,
         )
         logger.info(
-            "Proactive decision rejected: "
+            "主动通信决策被拒绝: "
             f"action={decision.action}, target_bot_id={decision.target_bot_id}, reason_code={reason_code}"
         )
         return False
@@ -144,9 +144,9 @@ async def _run_proactive_tick_locked(config: BotPrivateRelayConfig) -> bool:
     # ── 7. 解析消息生成模型 ──
     message_task_name, message_model_set = _resolve_model_set(config.proactive.message_model_task)
     if message_model_set is None:
-        logger.warning(f"Proactive message model unavailable; using fallback text task={config.proactive.message_model_task}")
+        logger.warning(f"主动通信消息模型不可用；将使用回退文本 task={config.proactive.message_model_task}")
     else:
-        logger.info(f"Proactive message model task resolved: {message_task_name}")
+        logger.info(f"主动通信消息模型任务已解析: {message_task_name}")
 
     # ── 8. 确定 channel ──
     channel = "social" if decision.action == "send_social_message" else "transaction"
@@ -169,7 +169,7 @@ async def _run_proactive_tick_locked(config: BotPrivateRelayConfig) -> bool:
             reason_code="send_message_false",
         )
         logger.warning(
-            "Proactive send failed: "
+            "主动通信发送失败: "
             f"action={decision.action}, target_bot_id={decision.target_bot_id}, reason_code=send_message_false"
         )
         return False
@@ -183,7 +183,7 @@ async def _run_proactive_tick_locked(config: BotPrivateRelayConfig) -> bool:
         reason_code=decision.reason,
     )
     logger.info(
-        "Proactive send succeeded: "
+        "主动通信发送成功: "
         f"action={decision.action}, target_bot_id={decision.target_bot_id}, reason={decision.reason}"
     )
     return True
@@ -194,7 +194,7 @@ async def _run_proactive_tick_locked(config: BotPrivateRelayConfig) -> bool:
 # =============================================================================
 
 def build_proactive_snapshot(config: BotPrivateRelayConfig) -> str:
-    """Build bounded text snapshot for proactive decision.
+    """构建有界文本快照，用于主动通信决策。
 
     构建给 LLM 决策用的系统状态快照文本。
     包含以下信息：
@@ -299,7 +299,7 @@ async def request_proactive_decision(
     model_set: object,
     snapshot: str,
 ) -> ProactiveDecision:
-    """Ask the decision model and normalize its JSON answer.
+    """请求决策模型并规范化其 JSON 回复。
 
     调用 LLM 进行决策。如果 LLM 返回空回复，最多重试 3 次。
     """
@@ -317,7 +317,7 @@ async def request_proactive_decision(
 
         if not message:
             store.audit("proactive_decision_empty_response", attempt=attempt)
-            logger.info(f"Proactive decision empty response: attempt={attempt}")
+            logger.info(f"主动通信决策空回复: attempt={attempt}")
             if attempt < _DECISION_ATTEMPTS and config.proactive.decision_retry_interval_seconds > 0:
                 await asyncio.sleep(config.proactive.decision_retry_interval_seconds)
             continue
@@ -328,7 +328,7 @@ async def request_proactive_decision(
 
 
 def parse_decision(raw: str) -> ProactiveDecision:
-    """Parse and normalize decision JSON.
+    """解析并规范化决策 JSON。
 
     从 LLM 的原始输出中解析决策 JSON。
     使用 json_repair 处理 LLM 可能产生的非标准 JSON。
@@ -360,7 +360,7 @@ def parse_decision(raw: str) -> ProactiveDecision:
 # =============================================================================
 
 def validate_decision(config: BotPrivateRelayConfig, decision: ProactiveDecision) -> tuple[bool, str]:
-    """Validate decision against deterministic hard gates.
+    """通过确定性硬门禁验证决策结果。
 
     对 LLM 决策进行确定性的安全检查。这些规则是硬编码的，不依赖 LLM。
 
@@ -429,7 +429,7 @@ async def generate_proactive_message(
     decision: ProactiveDecision,
     channel: str,
 ) -> str:
-    """Generate outbound relay text or return a safe fallback.
+    """生成外发中继消息正文，或返回安全的回退文本。
 
     调用消息生成 LLM 生成外发消息正文。
     如果 LLM 生成失败（异常或空回复），使用回退文本。
@@ -452,7 +452,7 @@ async def generate_proactive_message(
         response = await request.send(stream=False)
         message = str(getattr(response, "message", "") or "").strip()
     except Exception as exc:
-        logger.warning(f"Proactive message generation failed: {exc}")
+        logger.warning(f"主动通信消息生成失败: {exc}")
         message = ""
 
     text = message or fallback
@@ -477,7 +477,7 @@ async def dispatch_proactive_message(
     channel: str,
     text: str,
 ) -> bool:
-    """Send proactive social or transaction through the normal relay adapter path.
+    """通过标准中继适配器通道发送主动通信消息（社交或事务）。
 
     构建 relay_context 和 Message 对象，通过 MessageSender → Adapter → MQTT 发送。
     """
@@ -543,7 +543,7 @@ async def dispatch_proactive_message(
 # =============================================================================
 
 def mark_proactive_success(config: BotPrivateRelayConfig, decision: ProactiveDecision) -> None:
-    """Consume proactive quota after a successful send.
+    """成功发送后消耗主动通信配额。
 
     成功发送后消耗配额：更新每小时计数和冷却时间。
     """
@@ -626,7 +626,7 @@ def _hour_key(now: float) -> str:
 
 
 def _has_recent_chat_hint(ttl_seconds: int = 1800) -> bool:
-    """Return whether a recent ordinary chat hint exists.
+    """检查是否存在最近的普通聊天线索。
 
     检查是否有最近的普通聊天线索（默认 30 分钟 TTL）。
     同时清理过期线索。
@@ -678,7 +678,7 @@ def _decision_prompt(config: BotPrivateRelayConfig, snapshot: str) -> str:
 
 
 def _decision_partner_lines(config: BotPrivateRelayConfig) -> str:
-    """Render explicit target bot ids for the decision prompt."""
+    """渲染决策提示中的目标 bot id 列表。"""
 
     lines: list[str] = []
     for partner in _configured_partners(config):
@@ -762,7 +762,7 @@ def _relevant_sessions_text(peer_bot_id: str) -> str:
 
 
 def _core_personality_or_none() -> object | None:
-    """Return core personality when core config is initialized."""
+    """当核心配置已初始化时，返回核心人格配置。"""
 
     try:
         return get_core_config().personality
@@ -771,7 +771,7 @@ def _core_personality_or_none() -> object | None:
 
 
 def _personality_field(personality: object | None, field_name: str) -> str:
-    """Return a personality string field, or empty text when unavailable."""
+    """返回人格字符串字段，不可用时返回空文本。"""
 
     return str(getattr(personality, field_name, "") or "")
 

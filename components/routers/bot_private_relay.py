@@ -1,4 +1,4 @@
-"""Router endpoints for bot_private_relay management."""
+"""bot_private_relay 管理的路由端点。"""
 
 # =============================================================================
 # BotPrivateRelayRouter - 管理端点
@@ -16,14 +16,14 @@ from __future__ import annotations
 from src.core.components.base.router import BaseRouter as BaseRouterComponent
 
 class BotPrivateRelayRouter(BaseRouterComponent):
-    """Minimal management router for plugin-local inspection."""
+    """用于插件本地检查的最简管理路由。"""
 
     router_name = "bot_private_relay"
-    router_description = "Bot private relay management router"
+    router_description = "Bot 私有中继管理路由"
     custom_route_path = "/router/bot_private_relay"
 
     def register_endpoints(self) -> None:
-        """Register plugin-local management endpoints.
+        """注册插件本地管理端点。
 
         注册两个基础管理端点，用于快速检查插件运行状态。
         """

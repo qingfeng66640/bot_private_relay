@@ -1,4 +1,4 @@
-"""Relay-specific chatter implementation."""
+"""中继会话专用 Chatter 实现。"""
 
 # =============================================================================
 # BotRelayChatter - 中继对话智能体
@@ -52,10 +52,10 @@ _LOG_PREVIEW_LIMIT = 300  # 日志中 LLM 回复预览的最大字符数
 
 
 class BotRelayChatter(BaseChatter):
-    """Chatter dedicated to bot-to-bot private relay conversations."""
+    """专用于 bot 之间私有中继对话的 Chatter。"""
 
     chatter_name = "bot_relay_chatter"
-    chatter_description = "Bot private relay chatter"
+    chatter_description = "Bot 私有中继对话智能体"
     associated_platforms = ["bot_relay"]  # 仅处理 bot_relay 平台的消息
     chat_type = ChatType.PRIVATE             # 私聊类型
 
@@ -113,7 +113,7 @@ class BotRelayChatter(BaseChatter):
 
     @property
     def relay_config(self) -> BotPrivateRelayConfig:
-        """Return the typed relay plugin config."""
+        """返回类型化的 relay 插件配置。"""
 
         if not self.plugin or not isinstance(self.plugin.config, BotPrivateRelayConfig):
             raise RuntimeError("Bot relay chatter requires BotPrivateRelayConfig")
@@ -124,7 +124,7 @@ class BotRelayChatter(BaseChatter):
     # =========================================================================
 
     async def get_llm_usables(self) -> list[type[Any]]:
-        """Return only relay-owned LLM usables for the relay chatter.
+        """仅返回 relay 专属的 LLM Usable 列表。
 
         过滤全局的 LLM Usable 列表，只保留 relay 专用的 Action/Tool。
         这样 LLM 就不会看到或调用其他插件的功能。
@@ -135,7 +135,7 @@ class BotRelayChatter(BaseChatter):
 
     @classmethod
     def _is_relay_usable(cls, usable_cls: type[Any]) -> bool:
-        """Return whether a usable belongs to the relay callable surface."""
+        """判断指定 usable 是否属于 relay 可调用范围。"""
 
         get_signature = getattr(usable_cls, "get_signature", None)
         signature = get_signature() if callable(get_signature) else ""
@@ -148,7 +148,7 @@ class BotRelayChatter(BaseChatter):
     async def execute(
         self,
     ) -> AsyncGenerator[ChatterResult, WaitResumeEvent | None]:
-        """Run one relay-focused LLM turn when the protocol expects a reply.
+        """执行一轮 relay 集中的 LLM 对话（当协议期待回复时）。
 
         Chatter 的主执行循环。使用 AsyncGenerator 模式支持分步执行。
 
@@ -164,7 +164,7 @@ class BotRelayChatter(BaseChatter):
         stream_manager = get_stream_manager()
         chat_stream = await stream_manager.activate_stream(self.stream_id)
         if chat_stream is None:
-            logger.error(f"Cannot activate relay chat stream: {self.stream_id}")
+            logger.error(f"无法激活 relay 聊天流: {self.stream_id}")
             yield Failure("无法激活 bot_relay 聊天流")
             return
 
@@ -196,7 +196,7 @@ class BotRelayChatter(BaseChatter):
                 relay_context=relay_context,
             )
         except Exception as exc:
-            logger.error("Bot relay chatter execution failed", exc_info=True)
+            logger.error("Bot relay chatter 执行失败", exc_info=True)
             await self.flush_unreads(unread_messages)
             yield Failure("bot_relay_chatter 执行失败", exc)
             return
@@ -216,7 +216,7 @@ class BotRelayChatter(BaseChatter):
         unread_messages: list[Message],
         relay_context: dict[str, Any],
     ) -> ChatterResult:
-        """Build and send the relay-only LLM request, then run returned tool calls.
+        """构建并发送 relay 专属的 LLM 请求，然后执行返回的 Tool Call。
 
         一轮完整的 LLM 对话流程：
         1. 构建 LLM 请求（system prompt + user prompt + tools）
@@ -250,7 +250,7 @@ class BotRelayChatter(BaseChatter):
         tool_registry = await self.inject_usables(request)
 
         logger.info(
-            "BotRelayChatter sending LLM request: "
+            "BotRelayChatter 发送 LLM 请求: "
             f"conversation_id={relay_context.get('conversation_id')}, "
             f"peer_bot_id={relay_context.get('peer_bot_id')}, "
             f"channel={relay_context.get('channel')}, "
@@ -266,7 +266,7 @@ class BotRelayChatter(BaseChatter):
         message_text = (response.message or "").strip()
         call_names = [getattr(call, "name", "") for call in response.call_list or []]
         logger.info(
-            "BotRelayChatter LLM response: "
+            "BotRelayChatter LLM 回复: "
             f"text_len={len(message_text)}, "
             f"text_preview={self._preview_for_log(message_text)!r}, "
             f"tool_calls={call_names}"
@@ -274,7 +274,7 @@ class BotRelayChatter(BaseChatter):
 
         # ── 分支1：LLM 返回了 Tool Call ──
         if response.call_list:
-            logger.info(f"BotRelayChatter executing tool calls: {call_names}")
+            logger.info(f"BotRelayChatter 执行 Tool 调用: {call_names}")
 
             # 加固事务 Tool 参数（确保 conversation_id/caller_bot 正确）
             self._harden_transaction_tool_calls(response.call_list, relay_context)
@@ -300,11 +300,11 @@ class BotRelayChatter(BaseChatter):
             sorted_call_names = [getattr(call, "name", "") for call in sorted_calls]
             if not self._should_request_followup_after_tools(sorted_call_names):
                 # 没有事务 Tool → 不需要 follow-up
-                logger.info("BotRelayChatter completed relay action turn without follow-up")
+                logger.info("BotRelayChatter 完成 relay action 轮次，无需 follow-up")
                 return Success("bot_relay_chatter completed relay action turn")
 
             # 有事务 Tool → 请求 LLM follow-up 将执行结果转为自然语言
-            logger.info("BotRelayChatter completed relay tool turn; requesting follow-up reply")
+            logger.info("BotRelayChatter 完成 relay Tool 轮次；请求 follow-up 回复")
             return await self._run_followup_after_tools(
                 response=response,
                 tool_registry=tool_registry,
@@ -319,7 +319,7 @@ class BotRelayChatter(BaseChatter):
             if self._is_open_transaction(relay_context):
                 # 事务未关闭但只发了文本 → 警告并重试
                 logger.warning(
-                    "BotRelayChatter suppressed bare transaction text without tool call: "
+                    "BotRelayChatter 阻止了事务中不含 Tool Call 的纯文本: "
                     f"conversation_id={relay_context.get('conversation_id')}, "
                     f"state={relay_context.get('state')}, intent={relay_context.get('intent')}"
                 )
@@ -333,7 +333,7 @@ class BotRelayChatter(BaseChatter):
             return await self._send_plain_text_response(message_text, unread_messages[-1])
 
         # ── 分支3：LLM 既无文本也无 Tool Call ──
-        logger.info("BotRelayChatter LLM produced no text and no tool calls; nothing to send")
+        logger.info("BotRelayChatter LLM 未产生文本和 Tool Call；无内容可发送")
         return Success("bot_relay_chatter completed without tool calls")
 
     # =========================================================================
@@ -342,7 +342,7 @@ class BotRelayChatter(BaseChatter):
 
     @classmethod
     def _should_request_followup_after_tools(cls, call_names: list[str]) -> bool:
-        """Return whether tool results need a follow-up relay action.
+        """判断 Tool 执行结果是否需要生成中继跟进回复。
 
         只有包含事务 Tool 时才需要 follow-up。
         因为事务操作后需要将结果通知对端 bot。
@@ -360,7 +360,7 @@ class BotRelayChatter(BaseChatter):
         initial_call_names: list[str] | None = None,
         initial_tool_results: list[tuple[bool, bool]] | None = None,
     ) -> ChatterResult:
-        """Ask the LLM to turn tool results into an outbound relay reply.
+        """请求 LLM 将 Tool 执行结果转换为对外中继回复。
 
         Tool 执行后，请求 LLM 生成自然语言的跟进回复。
         如果 LLM 没有生成合适的文本，使用协议回退文本。
@@ -374,7 +374,7 @@ class BotRelayChatter(BaseChatter):
             getattr(call, "name", "") for call in follow_response.call_list or []
         ]
         logger.info(
-            "BotRelayChatter follow-up response: "
+            "BotRelayChatter follow-up 回复: "
             f"text_len={len(follow_text)}, "
             f"text_preview={self._preview_for_log(follow_text)!r}, "
             f"tool_calls={follow_call_names}"
@@ -382,7 +382,7 @@ class BotRelayChatter(BaseChatter):
 
         # ── 有 Tool Call → 再次执行 ──
         if follow_response.call_list:
-            logger.info(f"BotRelayChatter executing follow-up tool calls: {follow_call_names}")
+            logger.info(f"BotRelayChatter 执行 follow-up Tool 调用: {follow_call_names}")
             self._harden_transaction_tool_calls(follow_response.call_list, relay_context or {})
             sorted_calls = self._sort_transaction_tool_calls(follow_response.call_list, relay_context or {})
             sorted_call_names = [getattr(call, "name", "") for call in sorted_calls]
@@ -399,7 +399,7 @@ class BotRelayChatter(BaseChatter):
             )
             if fallback_text and trigger_message is not None:
                 logger.warning(
-                    "BotRelayChatter sending protocol fallback after transaction tool follow-up: "
+                    "BotRelayChatter 事务 Tool follow-up 后发送协议回退文本: "
                     f"conversation_id={relay_context.get('conversation_id') if relay_context else ''}, "
                     f"initial_tool_calls={initial_call_names}, follow_tool_calls={sorted_call_names}, "
                     f"follow_results={follow_results}"
@@ -411,7 +411,7 @@ class BotRelayChatter(BaseChatter):
         if follow_text:
             if self._should_send_followup_text(relay_context or {}, follow_text) and trigger_message is not None:
                 return await self._send_plain_text_response(follow_text, trigger_message)
-            logger.info("BotRelayChatter suppressed bare follow-up text after tool calls")
+            logger.info("BotRelayChatter Tool 调用后阻止了纯文本 follow-up")
 
         # ── 既无 Tool 也无合适文本 → 协议回退 ──
         fallback_text = self._protocol_fallback_text_after_transaction_tool(
@@ -422,13 +422,13 @@ class BotRelayChatter(BaseChatter):
         )
         if fallback_text and trigger_message is not None:
             logger.warning(
-                "BotRelayChatter sending protocol fallback after empty transaction follow-up: "
+                "BotRelayChatter 事务 follow-up 为空时发送协议回退文本: "
                 f"conversation_id={relay_context.get('conversation_id') if relay_context else ''}, "
                 f"initial_tool_calls={initial_call_names}"
             )
             return await self._send_plain_text_response(fallback_text, trigger_message)
 
-        logger.info("BotRelayChatter follow-up produced no text and no tool calls")
+        logger.info("BotRelayChatter follow-up 未产生文本和 Tool Call")
         return Success("bot_relay_chatter completed relay tool turn without follow-up text")
 
     @classmethod
@@ -439,7 +439,7 @@ class BotRelayChatter(BaseChatter):
         follow_call_names: list[str],
         relay_context: dict[str, Any],
     ) -> str:
-        """Return fallback text when a transaction state change was not relayed.
+        """返回事务状态变更未被中继时的回退文本。
 
         当事务 Tool 执行成功后，LLM 没有生成合适的回复文本时，
         使用预定义的协议回退文本。
@@ -470,7 +470,7 @@ class BotRelayChatter(BaseChatter):
         call_names: list[str],
         tool_results: list[tuple[bool, bool]],
     ) -> str:
-        """Return the first transaction tool call that executed successfully."""
+        """返回第一个执行成功的事务 Tool 调用名称。"""
 
         for index, name in enumerate(call_names):
             if name not in cls._TRANSACTION_TOOL_NAMES:
@@ -484,7 +484,7 @@ class BotRelayChatter(BaseChatter):
 
     @classmethod
     def _should_send_followup_text(cls, relay_context: dict[str, Any], text: str) -> bool:
-        """Return whether tool follow-up text is outbound relay content.
+        """判断 Tool follow-up 文本是否应作为对外中继内容。
 
         判断 follow-up 文本是否应该作为外发内容：
         - 不在开放事务中 → 不发送
@@ -515,14 +515,14 @@ class BotRelayChatter(BaseChatter):
         trigger_message: Message | None,
         relay_context: dict[str, Any],
     ) -> ChatterResult:
-        """Retry once when an open transaction only produced plain text.
+        """当事务未关闭但 LLM 只返回了纯文本时，执行一次重试。
 
         当事务未关闭但 LLM 只返回了文本（没有事务 Tool）时，
         追加一条重试指令并重新请求 LLM。
         """
 
         logger.warning(
-            "BotRelayChatter retrying incomplete transaction action: "
+            "BotRelayChatter 重试不完整的事务操作: "
             f"conversation_id={relay_context.get('conversation_id')}, "
             f"state={relay_context.get('state')}, intent={relay_context.get('intent')}, "
             "call_names=['action-send_text']"
@@ -541,7 +541,7 @@ class BotRelayChatter(BaseChatter):
         await retry_response
         retry_call_names = [getattr(call, "name", "") for call in retry_response.call_list or []]
         logger.info(
-            "BotRelayChatter retry response: "
+            "BotRelayChatter 重试回复: "
             f"tool_calls={retry_call_names}, "
             f"text_len={len((retry_response.message or '').strip())}"
         )
@@ -550,7 +550,7 @@ class BotRelayChatter(BaseChatter):
             self._harden_transaction_tool_calls(retry_response.call_list, relay_context)
             if self._is_incomplete_transaction_send_text(retry_call_names, relay_context):
                 logger.warning(
-                    "BotRelayChatter dropping repeated incomplete transaction send_text: "
+                    "BotRelayChatter 丢弃重复的不完整事务 send_text: "
                     f"conversation_id={relay_context.get('conversation_id')}, "
                     f"state={relay_context.get('state')}, intent={relay_context.get('intent')}"
                 )
@@ -563,7 +563,7 @@ class BotRelayChatter(BaseChatter):
         retry_text = (retry_response.message or "").strip()
         if retry_text:
             logger.warning(
-                "BotRelayChatter dropping repeated bare transaction text: "
+                "BotRelayChatter 丢弃重复的不含 Tool 的事务纯文本: "
                 f"conversation_id={relay_context.get('conversation_id')}, "
                 f"state={relay_context.get('state')}, intent={relay_context.get('intent')}"
             )
@@ -577,7 +577,7 @@ class BotRelayChatter(BaseChatter):
     def _is_incomplete_transaction_send_text(
         cls, call_names: list[str], relay_context: dict[str, Any]
     ) -> bool:
-        """Return whether an open transaction only tried to send text.
+        """判断事务未关闭时是否只尝试发送了文本。
 
         检查条件：事务未关闭 + LLM 只调用了 send_text（没有事务 Tool）
         """
@@ -588,7 +588,7 @@ class BotRelayChatter(BaseChatter):
 
     @staticmethod
     def _is_open_transaction(relay_context: dict[str, Any]) -> bool:
-        """Return whether the relay context is an unfinished transaction.
+        """判断 relay context 是否为未完成的事务。
 
         判断事务是否仍在进行中（非终态）：
         - channel=transaction
@@ -606,7 +606,7 @@ class BotRelayChatter(BaseChatter):
     def _sort_transaction_tool_calls(
         cls, calls: list[Any], relay_context: dict[str, Any]
     ) -> list[Any]:
-        """Run transaction tools before send_text in the same relay turn.
+        """在同一轮 relay 对话中，优先执行事务 Tool，再执行 send_text。
 
         事务 Tool 优先于 send_text 执行。
         因为事务操作必须在发送文本之前完成，确保协议一致性。
@@ -626,7 +626,7 @@ class BotRelayChatter(BaseChatter):
     def _harden_transaction_tool_calls(
         self, calls: list[Any], relay_context: dict[str, Any]
     ) -> None:
-        """Force protocol-critical transaction args from current relay context.
+        """用当前 relay context 强制覆盖协议关键的事务参数。
 
         用 relay_context 中的值覆盖 LLM 生成的 Tool 参数。
         防止 LLM 幻觉导致的 conversation_id 或 caller_bot 错误。
@@ -648,7 +648,7 @@ class BotRelayChatter(BaseChatter):
             args = getattr(call, "args", None)
             if not isinstance(args, dict):
                 logger.warning(
-                    "BotRelayChatter replacing non-dict transaction tool args: "
+                    "BotRelayChatter 替换非 dict 类型的事务 Tool 参数: "
                     f"tool={name}, conversation_id={conversation_id}, caller_bot={caller_bot}"
                 )
                 object.__setattr__(call, "args", {})
@@ -676,7 +676,7 @@ class BotRelayChatter(BaseChatter):
     async def _send_plain_text_response(
         self, message_text: str, trigger_message: Message,
     ) -> ChatterResult:
-        """Send plain LLM text through the relay send_text action."""
+        """通过 relay send_text action 发送纯 LLM 文本。"""
 
         from ..actions.relay import BotRelaySendTextAction
 
@@ -694,7 +694,7 @@ class BotRelayChatter(BaseChatter):
         return Failure("bot_relay_chatter failed to send plain-text relay response")
 
     async def _send_relay_request(self, request: Any) -> Any:
-        """Send relay LLM request using non-streaming mode first.
+        """发送 relay LLM 请求，优先使用 non-streaming 模式。
 
         优先使用 non-streaming 模式（更快），失败时回退到 streaming。
         """
@@ -711,7 +711,7 @@ class BotRelayChatter(BaseChatter):
 
     @staticmethod
     def _preview_for_log(text: str) -> str:
-        """Return a single-line bounded preview for LLM response logging."""
+        """返回单行限长的 LLM 回复日志预览文本。"""
 
         single_line = " ".join(text.split())
         if len(single_line) <= _LOG_PREVIEW_LIMIT:
@@ -719,7 +719,7 @@ class BotRelayChatter(BaseChatter):
         return f"{single_line[:_LOG_PREVIEW_LIMIT]}..."
 
     def _build_system_prompt(self, relay_context: dict[str, Any]) -> str:
-        """Build the relay-specific system prompt without DefaultChatter coupling.
+        """构建 relay 专用的 system prompt，不依赖 DefaultChatter。
 
         构建 system prompt，包含四部分：
         1. 协议约束（_RELAY_SYSTEM_GUIDANCE）
@@ -748,7 +748,7 @@ class BotRelayChatter(BaseChatter):
 
     @staticmethod
     def _build_personality_prompt() -> str:
-        """Build the complete core personality block for relay expression style.
+        """构建 relay 表达风格的完整核心人设 prompt。
 
         构建人设 prompt，只用于影响回复的语气和表达风格。
         添加了严格的"事实边界"声明。
@@ -780,7 +780,7 @@ class BotRelayChatter(BaseChatter):
         unread_text: str,
         relay_context: dict[str, Any],
     ) -> str:
-        """Build the user prompt for one relay turn.
+        """构建一轮 relay 对话的 user prompt。
 
         构建 user prompt，包含：
         1. 历史消息（同一 conversation_id 的最近 8 条）
@@ -818,7 +818,7 @@ class BotRelayChatter(BaseChatter):
         messages: list[Message],
         relay_context: dict[str, Any],
     ) -> list[Message]:
-        """Return history from the same relay conversation block.
+        """返回同一 relay conversation 中的历史消息。
 
         从历史消息中筛选出同一 conversation_id 的消息。
         这确保不同事务/社交对话的上下文不会互相干扰。
@@ -841,7 +841,7 @@ class BotRelayChatter(BaseChatter):
 
     @staticmethod
     def _build_incomplete_transaction_retry_prompt() -> str:
-        """Build the retry-only instruction for incomplete transaction actions.
+        """构建事务不完整回复的重试指令 prompt。
 
         当事务未关闭但 LLM 只返回了文本时，追加此指令。
         """
@@ -860,7 +860,7 @@ class BotRelayChatter(BaseChatter):
 
     @classmethod
     def _should_respond(cls, relay_context: dict[str, Any], local_bot_id: str = "") -> bool:
-        """Return whether the latest relay context expects an automatic response.
+        """判断最新的 relay context 是否期待自动回复。
 
         决定是否应该自动回复的检查条件：
         1. relay_context 非空
@@ -890,7 +890,7 @@ class BotRelayChatter(BaseChatter):
 
     @classmethod
     def _format_relay_context(cls, relay_context: dict[str, Any]) -> str:
-        """Build a human-readable relay context block for prompts and tests.
+        """构建可读的 relay context 文本块，用于 prompt 和测试。
 
         将 relay_context 格式化为 LLM 可读的文本块。
         """
@@ -935,7 +935,7 @@ class BotRelayChatter(BaseChatter):
 
     @staticmethod
     def _latest_relay_context(chat_stream: ChatStream) -> dict[str, Any]:
-        """Find the freshest relay_context available in the stream.
+        """在聊天流中查找最新的 relay_context。
 
         从聊天流中查找最新的 relay_context。
         查找顺序：未读消息（倒序）→ 当前消息 → 历史消息（倒序）

@@ -1,4 +1,4 @@
-"""Bridge final relay transactions to the external todo plugin."""
+"""将最终中继事务桥接到外部 todo 插件。"""
 
 # =============================================================================
 # TodoBridge - 事务到 Todo 的桥接
@@ -33,7 +33,7 @@ logger = get_logger("bot_private_relay_todo_bridge")
 
 
 class TodoBridge:
-    """Publish idempotent todo events after final transaction decisions.
+    """在事务最终决策后发布幂等的 todo 事件。
 
     注意：Todo 事件的发布是幂等的，同一个 conversation_id 的 confirm 事件
     可以被多次发布，todo_plugin 侧需要自行处理去重。
@@ -50,7 +50,7 @@ class TodoBridge:
         owner_bot: str,
         peer_bot_id: str,
     ) -> tuple[bool, str, dict[str, Any]]:
-        """Publish the todo bridge event with retry.
+        """发布 Todo 桥接事件（带重试）。
 
         发布 Todo 决策事件的完整流程。
 
@@ -69,7 +69,7 @@ class TodoBridge:
         # ── 1. 检查是否启用 ──
         if not bridge.enabled:
             logger.info(
-                "Relay todo bridge skipped: disabled, "
+                "Relay todo bridge 已跳过：未启用, "
                 f"conversation_id={record.conversation_id}, final_intent={final_intent}"
             )
             return True, "todo_bridge_disabled", {}
@@ -77,7 +77,7 @@ class TodoBridge:
         # ── 2. 检查 intent（只有 confirm 才触发） ──
         if final_intent != "confirm":
             logger.debug(
-                "Relay todo bridge skipped: non-final intent, "
+                "Relay todo bridge 已跳过：非最终意图, "
                 f"conversation_id={record.conversation_id}, final_intent={final_intent}"
             )
             return True, "todo_bridge_skipped", {}
@@ -119,7 +119,7 @@ class TodoBridge:
         attempts = max(0, int(bridge.max_retries)) + 1
 
         logger.info(
-            "Publishing relay todo decision: "
+            "正在发布 relay todo 决策: "
             f"event_name={bridge.event_name}, "
             f"conversation_id={record.conversation_id}, "
             f"owner_bot={owner_bot}, "
@@ -137,7 +137,7 @@ class TodoBridge:
                 if isinstance(event_result, dict) and event_result.get("ok") is True:
                     # ── Todo 发布成功 ──
                     logger.info(
-                        "Relay todo bridge accepted decision: "
+                        "Relay todo bridge 已接受决策: "
                         f"conversation_id={record.conversation_id}, "
                         f"owner_bot={owner_bot}, peer_bot_id={normalized_peer_bot_id}, "
                         f"attempt={attempt + 1}/{attempts}, "
@@ -161,7 +161,7 @@ class TodoBridge:
             except Exception as exc:
                 result = {"ok": False, "todo_uid": "", "status": "todo_bridge_failed", "error": str(exc)}
                 logger.warning(
-                    "Relay todo bridge publish failed: "
+                    "Relay todo bridge 发布失败: "
                     f"conversation_id={record.conversation_id}, "
                     f"attempt={attempt + 1}/{attempts}, "
                     f"error={exc}"
@@ -171,7 +171,7 @@ class TodoBridge:
             if attempt + 1 < attempts:
                 retry_backoff = max(0.0, float(bridge.retry_backoff_seconds))
                 logger.warning(
-                    "Relay todo bridge publish attempt failed; retrying: "
+                    "Relay todo bridge 发布尝试失败；正在重试: "
                     f"conversation_id={record.conversation_id}, "
                     f"owner_bot={owner_bot}, peer_bot_id={normalized_peer_bot_id}, "
                     f"attempt={attempt + 1}/{attempts}, "
@@ -186,7 +186,7 @@ class TodoBridge:
 
         status = str(result.get("status") or "todo_bridge_retry_exhausted")
         logger.warning(
-            "Relay todo bridge exhausted: "
+            "Relay todo bridge 重试已耗尽: "
             f"conversation_id={record.conversation_id}, "
             f"owner_bot={owner_bot}, peer_bot_id={normalized_peer_bot_id}, "
             f"attempts={attempts}, "
@@ -210,7 +210,7 @@ class TodoBridge:
         owner_bot: str,
         explicit_peer_bot_id: str,
     ) -> str:
-        """Return the transaction participant that is not owner_bot.
+        """返回事务中不等于 owner_bot 的参与者。
 
         从事务记录中找出"对端"的 bot_id。
         逻辑：在 record.from_bot 和 record.to_bot 中找不等于 owner_bot 的那个。
@@ -230,7 +230,7 @@ class TodoBridge:
         owner_bot: str,
         peer_bot_id: str,
     ) -> str:
-        """Build a conservative owner-view title without self-reference.
+        """构建不包含自身引用的保守型 owner 视角标题。
 
         构建 Todo 标题。格式：
         "与 {peer_bot_id} 确认的计划：{summary/topic}"

@@ -1,4 +1,4 @@
-"""Relay envelope model and validation helpers."""
+"""中继信封数据模型与验证工具函数。"""
 
 # =============================================================================
 # RelayEnvelope - 协议信封
@@ -48,10 +48,10 @@ RelayChannel = Literal["system", "transaction", "social"]
 
 @dataclass(slots=True)
 class RelayEnvelope:
-    """Protocol envelope exchanged between bots.
+    """bot 之间交换的协议信封。
 
-    ``from_bot`` and ``to_bot`` are the only routing/security identities.
-    ``from_bot_name`` and ``to_bot_name`` are display-only.
+    ``from_bot`` 和 ``to_bot`` 是唯一的路由/安全身份标识。
+    ``from_bot_name`` 和 ``to_bot_name`` 仅用于显示。
     """
 
     # ── 协议版本 ──────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ class RelayEnvelope:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RelayEnvelope":
-        """Build an envelope from a dictionary.
+        """从字典构建信封。
 
         从字典构建信封对象，只保留 dataclass 中定义的已知字段，
         忽略未知字段（兼容未来协议扩展）。
@@ -110,7 +110,7 @@ class RelayEnvelope:
         return cls(**{key: value for key, value in data.items() if key in known})
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize the envelope to a JSON-friendly dictionary.
+        """将信封序列化为 JSON 友好的字典。
 
         序列化为 JSON 友好的字典格式，用于 MQTT 消息体传输。
         注意：列表和字典字段使用副本，防止外部修改影响内部状态。
@@ -147,7 +147,7 @@ class RelayEnvelope:
 
     @property
     def text(self) -> str:
-        """Return text payload content.
+        """返回 payload 中的文本内容。
 
         便捷属性：从 payload 中提取文本内容。
         """
@@ -156,7 +156,7 @@ class RelayEnvelope:
         return value if isinstance(value, str) else str(value)
 
     def validate(self) -> None:
-        """Validate security-critical envelope fields.
+        """验证安全关键的信封字段。
 
         验证安全关键的字段，防止非法信封进入系统：
         - message_id 不能为空（去重需要）
@@ -165,7 +165,7 @@ class RelayEnvelope:
         - reply_budget 不能为负数
 
         Raises:
-            ValueError: If required identities or control fields are invalid.
+            ValueError: 如果必需的标识符或控制字段无效。
         """
 
         if not self.message_id:
@@ -180,7 +180,7 @@ class RelayEnvelope:
             raise ValueError("reply_budget must not be negative")
 
     def increment_hop(self) -> "RelayEnvelope":
-        """Return a copy-like envelope with hop incremented.
+        """返回跳数递增后的副本信封。
 
         每次消息被接收/处理时，跳数 +1。
         返回新对象（copy-on-write），不修改原信封。

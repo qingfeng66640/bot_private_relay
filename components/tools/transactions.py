@@ -1,4 +1,4 @@
-"""Relay transaction tools with hard validation gates."""
+"""带硬校验门控的中继事务工具。"""
 
 # =============================================================================
 # 事务协议 Tool 组件
@@ -58,7 +58,7 @@ async def _execute_transaction_action(
     caller_bot: str,
     reason: str,
 ) -> tuple[bool, dict[str, Any]]:
-    """Validate and apply a transaction action.
+    """校验并应用事务操作。
 
     执行流程：
     1. 六项硬校验（validate_transaction_action）
@@ -75,7 +75,7 @@ async def _execute_transaction_action(
     )
     if not ok:
         logger.warning(
-            "Relay transaction action rejected: "
+            "中继事务操作被拒绝: "
             f"conversation_id={conversation_id}, "
             f"intent={action_intent}, "
             f"caller_bot={caller_bot}, "
@@ -87,7 +87,7 @@ async def _execute_transaction_action(
         config = getattr(plugin, "config", None)
         if not isinstance(config, BotPrivateRelayConfig):
             logger.warning(
-                "Relay transaction confirm rejected: relay config unavailable, "
+                "中继事务确认被拒绝: 中继配置不可用, "
                 f"conversation_id={conversation_id}, caller_bot={caller_bot}"
             )
             return False, {
@@ -104,7 +104,7 @@ async def _execute_transaction_action(
             record = store.TRANSACTION_LOG.get(conversation_id)
             if record is None:
                 logger.warning(
-                    "Relay transaction confirm rejected: transaction record missing, "
+                    "中继事务确认被拒绝: 事务记录缺失, "
                     f"conversation_id={conversation_id}, caller_bot={caller_bot}"
                 )
                 return False, {
@@ -122,7 +122,7 @@ async def _execute_transaction_action(
             )
             if not ok:
                 logger.warning(
-                    "Relay transaction confirm rejected by todo bridge: "
+                    "中继事务确认被 Todo Bridge 拒绝: "
                     f"conversation_id={conversation_id}, "
                     f"caller_bot={caller_bot}, "
                     f"todo_bridge_status={bridge_status}, "
@@ -156,7 +156,7 @@ async def _execute_transaction_action(
         payload["todo_bridge"] = bridge_result
 
     logger.info(
-        "Relay transaction action applied: "
+        "中继事务操作已应用: "
         f"conversation_id={conversation_id}, "
         f"intent={action_intent}, "
         f"caller_bot={caller_bot}, "
@@ -166,7 +166,7 @@ async def _execute_transaction_action(
     )
     if action_intent == "confirm":
         logger.info(
-            "Relay transaction confirm todo bridge result: "
+            "中继事务确认 Todo Bridge 结果: "
             f"conversation_id={conversation_id}, "
             f"todo_bridge_status={bridge_status}, "
             f"todo_uid={bridge_result.get('todo_uid', '')}"
@@ -180,7 +180,7 @@ async def _execute_transaction_action(
 # =============================================================================
 
 class AcceptTransactionTool(BaseTool):
-    """Accept a pending transaction request.
+    """接受待处理的事务请求。
 
     接受事务请求并进入 accepted 状态。
     可用状态：pending_reply → accepted
@@ -193,7 +193,7 @@ class AcceptTransactionTool(BaseTool):
     associated_platforms = RELAY_ASSOCIATED_PLATFORMS
 
     async def execute(self, conversation_id: str, caller_bot: str, reason: str = "") -> tuple[bool, dict[str, Any]]:
-        """Accept a transaction after hard validation."""
+        """通过硬校验后接受事务。"""
         return await _execute_transaction_action(
             plugin=self.plugin,
             action_intent=self.action_intent,
@@ -204,7 +204,7 @@ class AcceptTransactionTool(BaseTool):
 
 
 class ConfirmTransactionTool(BaseTool):
-    """Confirm a pending transaction request.
+    """确认待处理的事务请求。
 
     确认事务并进入 closed 终态。这是唯一触发 Todo Bridge 的操作。
     可用状态：accepted / reschedule_requested → closed
@@ -217,7 +217,7 @@ class ConfirmTransactionTool(BaseTool):
     associated_platforms = RELAY_ASSOCIATED_PLATFORMS
 
     async def execute(self, conversation_id: str, caller_bot: str, reason: str = "") -> tuple[bool, dict[str, Any]]:
-        """Confirm a transaction and publish todo projection when enabled."""
+        """确认事务并在启用时发布 Todo 投影。"""
         return await _execute_transaction_action(
             plugin=self.plugin,
             action_intent=self.action_intent,
@@ -228,7 +228,7 @@ class ConfirmTransactionTool(BaseTool):
 
 
 class DeclineTransactionTool(BaseTool):
-    """Decline a pending transaction request.
+    """拒绝待处理的事务请求。
 
     拒绝事务并进入 closed 终态。
     """
@@ -240,7 +240,7 @@ class DeclineTransactionTool(BaseTool):
     associated_platforms = RELAY_ASSOCIATED_PLATFORMS
 
     async def execute(self, conversation_id: str, caller_bot: str, reason: str = "") -> tuple[bool, dict[str, Any]]:
-        """Decline a transaction after hard validation."""
+        """通过硬校验后拒绝事务。"""
         return await _execute_transaction_action(
             plugin=self.plugin,
             action_intent=self.action_intent,
@@ -251,7 +251,7 @@ class DeclineTransactionTool(BaseTool):
 
 
 class CancelTransactionTool(BaseTool):
-    """Cancel a pending transaction request.
+    """取消待处理的事务请求。
 
     取消事务并进入 closed 终态。
     """
@@ -263,7 +263,7 @@ class CancelTransactionTool(BaseTool):
     associated_platforms = RELAY_ASSOCIATED_PLATFORMS
 
     async def execute(self, conversation_id: str, caller_bot: str, reason: str = "") -> tuple[bool, dict[str, Any]]:
-        """Cancel a transaction after hard validation."""
+        """通过硬校验后取消事务。"""
         return await _execute_transaction_action(
             plugin=self.plugin,
             action_intent=self.action_intent,
@@ -274,7 +274,7 @@ class CancelTransactionTool(BaseTool):
 
 
 class RescheduleTransactionTool(BaseTool):
-    """Request a transaction reschedule.
+    """请求事务改期。
 
     提出改期方案，进入 reschedule_requested 状态。
     对端收到后可以 confirm（接受改期）或提出新的 reschedule。
@@ -287,7 +287,7 @@ class RescheduleTransactionTool(BaseTool):
     associated_platforms = RELAY_ASSOCIATED_PLATFORMS
 
     async def execute(self, conversation_id: str, caller_bot: str, reason: str = "") -> tuple[bool, dict[str, Any]]:
-        """Request transaction reschedule after hard validation."""
+        """通过硬校验后请求事务改期。"""
         return await _execute_transaction_action(
             plugin=self.plugin,
             action_intent=self.action_intent,
@@ -298,7 +298,7 @@ class RescheduleTransactionTool(BaseTool):
 
 
 class AckTransactionTool(BaseTool):
-    """Acknowledge and close a pending transaction request.
+    """确认收到并关闭待处理的事务请求。
 
     确认收到并关闭事务。不同于 confirm，不会触发 Todo Bridge。
     """
@@ -310,7 +310,7 @@ class AckTransactionTool(BaseTool):
     associated_platforms = RELAY_ASSOCIATED_PLATFORMS
 
     async def execute(self, conversation_id: str, caller_bot: str, reason: str = "") -> tuple[bool, dict[str, Any]]:
-        """Acknowledge and close a transaction after hard validation."""
+        """通过硬校验后确认收到并关闭事务。"""
         return await _execute_transaction_action(
             plugin=self.plugin,
             action_intent=self.action_intent,
@@ -321,7 +321,7 @@ class AckTransactionTool(BaseTool):
 
 
 class CloseTransactionTool(BaseTool):
-    """Close a pending or reschedule transaction request.
+    """关闭待处理或改期的事务请求。
 
     关闭事务并进入 closed 终态。
     """
@@ -333,7 +333,7 @@ class CloseTransactionTool(BaseTool):
     associated_platforms = RELAY_ASSOCIATED_PLATFORMS
 
     async def execute(self, conversation_id: str, caller_bot: str, reason: str = "") -> tuple[bool, dict[str, Any]]:
-        """Close a transaction after hard validation."""
+        """通过硬校验后关闭事务。"""
         return await _execute_transaction_action(
             plugin=self.plugin,
             action_intent=self.action_intent,

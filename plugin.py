@@ -1,4 +1,4 @@
-"""bot_private_relay plugin entrypoint."""
+"""bot_private_relay 插件入口点。"""
 
 # =============================================================================
 # bot_private_relay 插件入口模块
@@ -49,15 +49,15 @@ logger = get_logger("bot_private_relay_plugin")
 
 @register_plugin
 class BotPrivateRelayPlugin(BasePlugin):
-    """Bot private relay plugin.
+    """Bot 私有中继插件。
 
-    Runtime plugin identity follows the bound repository name.
-    Transport platform remains ``bot_relay``.
+    运行时插件标识遵循绑定的仓库名称。
+    传输平台保持为 ``bot_relay``。
     """
 
     # ── 插件元数据 ──────────────────────────────────────────────────────
     plugin_name = "bot_private_relay"
-    plugin_description = "Bot-to-bot private relay plugin over MQTT"
+    plugin_description = "基于 MQTT 的 bot 私有中继插件，支持跨 bot 私聊、社交联系、事务协商与在线状态"
     plugin_version = "0.1.0"
     configs = [BotPrivateRelayConfig]          # 使用的配置类
     dependent_components: list[str] = []       # 无外部插件依赖
@@ -70,7 +70,7 @@ class BotPrivateRelayPlugin(BasePlugin):
         self._proactive_register_task_id: str | None = None
 
     def get_components(self) -> list[type]:
-        """Return registered plugin components for Phase 1."""
+        """返回为阶段1注册的插件组件。"""
 
         # 返回插件注册的所有组件类型，框架会根据类型自动实例化和管理
         return [
@@ -114,7 +114,7 @@ class BotPrivateRelayPlugin(BasePlugin):
     # =========================================================================
 
     async def on_plugin_loaded(self) -> None:
-        """Expose relay tools and register proactive scheduler when enabled."""
+        """对外暴露中继工具，并在启用时注册 proactive 调度器。"""
 
         # ── 注册配置到全局，供其他插件（如 todo_plugin）的 Tool 使用 ──
         if isinstance(self.config, BotPrivateRelayConfig):
@@ -139,7 +139,7 @@ class BotPrivateRelayPlugin(BasePlugin):
         register_bot_tool(RelaySocialContactTool)
 
     async def on_plugin_unloaded(self) -> None:
-        """Remove proactive scheduler state owned by this plugin instance."""
+        """移除此插件实例持有的 proactive 调度器状态。"""
 
         # ── 取消 proactive 调度器 ──
         if self._proactive_schedule_id:
@@ -164,7 +164,7 @@ class BotPrivateRelayPlugin(BasePlugin):
     # =========================================================================
 
     async def _register_proactive_schedule_when_ready(self) -> None:
-        """Register proactive periodic tick after scheduler becomes ready.
+        """在调度器就绪后注册定期 proactive tick。
 
         功能：等待调度器就绪后注册定期 tick。因为调度器可能在插件加载时
         尚未完全初始化，所以这里使用轮询等待（最多 600 次 × 0.5s = 5 分钟）。
@@ -192,7 +192,7 @@ class BotPrivateRelayPlugin(BasePlugin):
                     task_name="bot_private_relay_proactive",
                     force_overwrite=True,
                 )
-                logger.info(f"Bot private relay proactive schedule registered: {self._proactive_schedule_id}")
+                logger.info(f"Bot 私有中继 proactive 调度已注册: {self._proactive_schedule_id}")
 
                 # 立即触发首次 proactive tick（不等第一个周期）
                 get_task_manager().create_task(
@@ -206,13 +206,13 @@ class BotPrivateRelayPlugin(BasePlugin):
                 await asyncio.sleep(0.5)
             except Exception as exc:
                 # 其他异常，等待 2 秒后重试
-                logger.warning(f"Bot private relay proactive schedule registration failed: {exc}")
+                logger.warning(f"Bot 私有中继 proactive 调度注册失败: {exc}")
                 await asyncio.sleep(2.0)
 
-        logger.warning("Bot private relay proactive schedule registration timed out")
+        logger.warning("Bot 私有中继 proactive 调度注册超时")
 
     async def _proactive_tick_job(self) -> None:
-        """Scheduler callback for one proactive relay tick.
+        """单次 proactive 中继 tick 的调度器回调。
 
         每次定时器触发时，执行一次主动通信决策循环：
         1. 收集最近的聊天线索和系统状态快照

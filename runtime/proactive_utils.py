@@ -1,4 +1,4 @@
-"""Helpers for proactive relay snapshot trimming."""
+"""主动中继快照裁剪工具函数。"""
 
 # =============================================================================
 # Proactive 快照裁剪工具
@@ -20,7 +20,7 @@ from src.kernel.llm.token_counter import count_text_tokens
 
 
 def model_identifier_from_model_set(model_set: object) -> str:
-    """Return the first model identifier from a ModelSet-like object.
+    """从 ModelSet 类对象中返回第一个模型标识符。
 
     从 ModelSet 中提取第一个模型的标识符，用于 token 计数。
     """
@@ -35,7 +35,7 @@ def model_identifier_from_model_set(model_set: object) -> str:
 
 
 def token_budget_from_model_set(model_set: object) -> int:
-    """Return proactive snapshot budget derived from first model config.
+    """从第一个模型配置中推导出主动快照的 token 预算。
 
     计算 token 预算：min(max(1024, max_context // 4), 8000)。
     即使用模型最大上下文的 1/4，但不能低于 1024，不能超过 8000。
@@ -53,7 +53,7 @@ def token_budget_from_model_set(model_set: object) -> int:
 
 
 def fit_snapshot_to_budget(model_set: object, snapshot: str) -> str:
-    """Trim a structured snapshot to the proactive decision model budget.
+    """将结构化快照裁剪到主动决策模型的预算范围内。
 
     如果快照的 token 数在预算内，直接返回。
     否则按行从末尾开始保留（保留最新的信息），直到超出预算。
@@ -75,7 +75,7 @@ def fit_snapshot_to_budget(model_set: object, snapshot: str) -> str:
 
 
 def cap_field(value: object, max_chars: int = 500) -> str:
-    """Return a bounded single-field string for snapshot rendering.
+    """返回用于快照渲染的有界单字段字符串。
 
     截断过长的字符串字段，防止单个字段占用过多 token。
     """
@@ -87,7 +87,7 @@ def cap_field(value: object, max_chars: int = 500) -> str:
 
 
 def _safe_count_tokens(text: str, model_identifier: str) -> int:
-    """Count text tokens and return 0 if the provider tokenizer fails."""
+    """对文本进行 token 计数，如果分词器失败则返回 0。"""
 
     try:
         return count_text_tokens(text, model_identifier=model_identifier)
@@ -100,7 +100,7 @@ def _trim_text_suffix_by_budget(
     model_identifier: str,
     token_budget: int,
 ) -> str:
-    """Keep the newest snapshot lines while staying under token budget.
+    """保留最新的快照行，同时确保不超出 token 预算。
 
     从末尾开始保留行（优先保留最新信息），直到超出 token 预算。
     如果单行就超出预算，回退到字符级别裁剪。
@@ -133,7 +133,7 @@ def _trim_text_suffix_by_chars(
     model_identifier: str,
     token_budget: int,
 ) -> str:
-    """Binary-search a char suffix when line-based trimming is still too large.
+    """当按行裁剪仍然过大时，对字符后缀进行二分查找。
 
     使用二分查找找到满足 token 预算的最大字符后缀。
     """
@@ -158,7 +158,7 @@ def _trim_text_suffix_by_chars(
 
 
 def compact_audit_value(value: Any) -> str:
-    """Format an audit value for snapshot lines without leaking large payloads.
+    """格式化审计值用于快照行，避免泄漏大型 payload。
 
     格式化审计日志值：简单类型直接截断，复杂类型用 repr 截断。
     防止大 payload 泄漏到快照中。

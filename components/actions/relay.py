@@ -1,4 +1,4 @@
-"""Relay-only action components for bot_private_relay."""
+"""bot_private_relay 的中继专用 Action 组件。"""
 
 # =============================================================================
 # 中继专用 Action 组件
@@ -34,7 +34,7 @@ logger = get_logger("bot_private_relay_actions")
 # BotRelaySendTextAction - 发送文本消息
 # =============================================================================
 class BotRelaySendTextAction(BaseAction):
-    """Relay-only send text action.
+    """中继专用发送文本 Action。
 
     LLM 调用此 Action 向对端 bot 发送文本消息。
     通过 MessageSender → Adapter → MQTT 的路径发出。
@@ -50,7 +50,7 @@ class BotRelaySendTextAction(BaseAction):
         reply_to: str | None = None,
         at: str | None = None,
     ) -> AsyncGenerator[tuple[bool, str] | None, None]:
-        """Send text to the current relay peer.
+        """向当前 relay 对端发送文本消息。
 
         执行流程（使用 AsyncGenerator 支持分步 yield）：
         1. 清洗内容（去除 LLM 推理泄漏的 reason: 前缀、@ 前缀）
@@ -81,7 +81,7 @@ class BotRelaySendTextAction(BaseAction):
 
     @staticmethod
     def _clean_content(content: str) -> str:
-        """Remove tool-call reasoning leakage and relay-irrelevant @ prefixes.
+        """去除推理泄漏的 reason: 后缀和无关的 @ 前缀。
 
         清洗两个常见问题：
         1. LLM 有时会在 content 中附加 "reason:xxx" 的推理文本 → 截断
@@ -103,7 +103,7 @@ class BotRelaySendTextAction(BaseAction):
         content: Message | str,
         stream_id: str | None = None,
     ) -> bool:
-        """Send relay text while preserving transaction context.
+        """发送 relay 文本消息并保留事务上下文。
 
         构建 Message 对象并发送。关键点：
         - 保留 relay_context，确保事务/社交会话状态被正确传递
@@ -178,11 +178,11 @@ class BotRelaySendTextAction(BaseAction):
             return await get_message_sender().send_message(message)
 
         except Exception as exc:
-            logger.error(f"Relay send_text failed: {exc}", exc_info=True)
+            logger.error(f"Relay 发送文本失败: {exc}", exc_info=True)
             return False
 
     def _relay_context_for_send(self, last_msg: Message | None = None) -> dict[str, object]:
-        """Return outbound relay context without reusing inbound intent.
+        """返回不使用入站 intent 的出站 relay_context。
 
         构建出站 relay_context。关键设计：
         - 不重用入站的 intent（避免协议语义错误）
@@ -221,7 +221,7 @@ class BotRelaySendTextAction(BaseAction):
 # BotRelayPassAndWaitAction - 等待对端消息
 # =============================================================================
 class BotRelayPassAndWaitAction(BaseAction):
-    """Relay-only pass action.
+    """中继专用等待 Action。
 
     LLM 调用此 Action 表示本轮不主动发送内容，等待对端 bot 的下一条消息。
     用于 bot 判断当前不需要回复的场景。
@@ -232,7 +232,7 @@ class BotRelayPassAndWaitAction(BaseAction):
     chatter_allow = ["bot_relay_chatter"]
 
     async def execute(self, seconds: float | None = None) -> tuple[bool, str]:
-        """Wait for the next relay message or an optional timer.
+        """等待下一条 relay 消息或可选定时器。
 
         Args:
             seconds: 等待秒数；为空时等待对端新消息（无限等待）。
@@ -247,7 +247,7 @@ class BotRelayPassAndWaitAction(BaseAction):
 # BotRelayStopConversationAction - 结束对话
 # =============================================================================
 class BotRelayStopConversationAction(BaseAction):
-    """Relay-only stop action.
+    """中继专用停止 Action。
 
     LLM 调用此 Action 表示结束当前对话，并在指定时间内避免主动继续。
     """
@@ -257,7 +257,7 @@ class BotRelayStopConversationAction(BaseAction):
     chatter_allow = ["bot_relay_chatter"]
 
     async def execute(self, minutes: float) -> tuple[bool, str]:
-        """Stop the current relay conversation turn.
+        """结束当前 relay 对话轮次。
 
         Args:
             minutes: 冷却时间，单位为分钟。

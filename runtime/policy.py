@@ -1,4 +1,4 @@
-"""Policy rules for Phase 1 relay control fields."""
+"""Phase 1 中继控制字段的策略规则。"""
 
 # =============================================================================
 # PolicyEngine - 策略引擎
@@ -20,10 +20,10 @@ from .envelope import RelayEnvelope
 
 
 class PolicyEngine:
-    """Apply deterministic Phase 1 control-field rules."""
+    """应用确定性的 Phase 1 控制字段规则。"""
 
     def apply_outbound(self, envelope: RelayEnvelope) -> RelayEnvelope:
-        """Apply terminal and reply-budget policy to an outbound envelope.
+        """对出站信封应用终态和回复预算策略。
 
         对出站信封应用策略，确保协议控制字段一致性。
         这是确定性的、硬编码的规则，不依赖 LLM 判断。
@@ -62,7 +62,7 @@ class PolicyEngine:
         return envelope
 
     def should_auto_reply(self, relay_context: dict[str, object] | None) -> bool:
-        """Return whether a relay message may trigger bot auto-reply.
+        """判断中继消息是否应该触发 bot 自动回复。
 
         判断一条中继消息是否应该触发 bot 自动回复。
         两个条件：

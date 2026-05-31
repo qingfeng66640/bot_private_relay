@@ -140,7 +140,7 @@ bot_id = "bot_gamma"
 bot_name = "Bot Gamma"
 ```
 
-`bot_id` 是实际路由身份，`bot_name` 仅用于显示。旧配置 `[partners.bot_b]` 仍兼容，新配置建议使用 `[[partners.bots]]` 表达多个伙伴。
+`bot_id` 是实际路由身份，`bot_name` 仅用于显示。多个伙伴请重复使用 `[[partners.bots]]`。
 
 ### presence
 

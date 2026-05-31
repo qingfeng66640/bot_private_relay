@@ -19,7 +19,6 @@ inside the plugin directory are dev/test only.
 # [dynamic_social] - 动态社交联系配额
 # [proactive]      - bot 自主发起通信设置
 # [group_reply_suppression] - 群聊中静默特定 bot
-# [social_quotas]  - 每目标社交配额覆盖
 #
 # 配置文件位于：
 #   config/plugins/bot_private_relay/config.toml
@@ -46,17 +45,6 @@ class PartnerSection(SectionBase):
     bot_id: str = Field(default="", description="伙伴 bot 的路由 ID")
     # bot_name 仅用于显示（prompt、日志、历史渲染），不作为安全依据
     bot_name: str = Field(default="", description="伙伴 bot 的显示名称")
-
-
-# =============================================================================
-# 社交配额配置（每目标覆盖）
-# =============================================================================
-class SocialQuotaSection(SectionBase):
-    """Per-target proactive social quota."""
-
-    max_per_day: int = Field(default=5, description="每天最多主动社交联系次数")
-    max_per_hour: int = Field(default=2, description="每小时最多主动社交联系次数")
-    cooldown_seconds: int = Field(default=300, description="主动社交联系冷却秒数")
 
 
 # =============================================================================
@@ -124,12 +112,9 @@ class BotPrivateRelayConfig(BaseConfig):
     class PartnersSection(SectionBase):
         """Partner mapping for relay deployments.
 
-        ``[[partners.bots]]`` is the recommended form and can be repeated for
-        multiple peers. ``bot_b`` is only retained so old single-peer config
-        files keep loading.
+        ``[[partners.bots]]`` can be repeated for multiple peers.
         """
 
-        bot_b: PartnerSection = Field(default_factory=PartnerSection, description="兼容旧配置的单伙伴槽位；新配置请使用 bots")
         bots: list[PartnerSection] = Field(default_factory=list, description="伙伴 bot 列表；TOML 中用 [[partners.bots]] 重复配置多个 bot")
 
     # =========================================================================
@@ -222,19 +207,6 @@ class BotPrivateRelayConfig(BaseConfig):
         chat_types: list[str] = Field(default_factory=lambda: ["group"], description="启用静默拦截的聊天类型列表")
         blocked_bot_ids: list[str] = Field(default_factory=list, description="普通群聊中只接收不回复的 sender_id 列表；不会自动复用 partners 或 allowed_partner_bots")
 
-    # =========================================================================
-    # [social_quotas] 配置段 - 每目标社交配额覆盖
-    # =========================================================================
-    @config_section("social_quotas", title="Social Quotas", tag="plugin")
-    class SocialQuotasSection(SectionBase):
-        """Named per-target social quota overrides.
-
-        Currently only the legacy ``bot_b`` slot has a named override. Partners
-        configured through ``[[partners.bots]]`` use dynamic_social defaults.
-        """
-
-        bot_b: SocialQuotaSection = Field(default_factory=SocialQuotaSection)
-
     # ── 配置段实例 ──────────────────────────────────────────────────────
     relay: RelaySection = Field(default_factory=RelaySection)
     partners: PartnersSection = Field(default_factory=PartnersSection)
@@ -243,7 +215,6 @@ class BotPrivateRelayConfig(BaseConfig):
     dynamic_social: DynamicSocialSection = Field(default_factory=DynamicSocialSection)
     proactive: ProactiveSection = Field(default_factory=ProactiveSection)
     group_reply_suppression: GroupReplySuppressionSection = Field(default_factory=GroupReplySuppressionSection)
-    social_quotas: SocialQuotasSection = Field(default_factory=SocialQuotasSection)
 
     # =========================================================================
     # 配置查询辅助方法
@@ -268,15 +239,11 @@ class BotPrivateRelayConfig(BaseConfig):
         return None
 
     def iter_partners(self) -> list[PartnerSection]:
-        """Return configured partners from ``bot_b`` and ``[[partners.bots]]``.
-
-        The legacy ``bot_b`` entry wins when the same bot_id also appears in
-        ``bots`` so existing single-partner deployments remain stable.
-        """
+        """Return configured partners from ``[[partners.bots]]``."""
 
         partners: list[PartnerSection] = []
         seen: set[str] = set()
-        for value in [self.partners.bot_b, *self.partners.bots]:
+        for value in self.partners.bots:
             if not isinstance(value, PartnerSection):
                 continue
             bot_id = str(value.bot_id or "").strip()
@@ -301,15 +268,4 @@ class BotPrivateRelayConfig(BaseConfig):
             partner = self.partner_by_id(bot_id)
             if partner is not None:
                 return partner
-        return None
-
-    def social_quota_by_id(self, bot_id: str) -> SocialQuotaSection | None:
-        """Return a quota override that matches a partner bot id.
-
-        目前只有旧的 partners.bot_b 槽位有同名配额覆盖。通过
-        [[partners.bots]] 配置的多个伙伴使用 dynamic_social 默认配额。
-        """
-
-        if self.partners.bot_b.bot_id == bot_id:
-            return self.social_quotas.bot_b
         return None

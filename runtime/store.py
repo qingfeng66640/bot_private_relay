@@ -1,7 +1,6 @@
-"""Module-level runtime state for bot private relay.
+"""bot private relay 插件的模块级运行时状态。
 
-Service instances are not unique in Neo-MoFox, so all mutable runtime state lives
-here and nowhere else.
+在 Neo-MoFox 中，Service 实例不是单例的，因此所有可变运行时状态都集中在此处管理。
 """
 
 # =============================================================================
@@ -52,7 +51,7 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class PresenceRecord:
-    """Presence state for a partner bot.
+    """伙伴 bot 的在线状态。
 
     记录一个伙伴 bot 的在线状态信息。
     """
@@ -66,7 +65,7 @@ class PresenceRecord:
 
 @dataclass(slots=True)
 class RelaySession:
-    """Minimal Phase 1 relay session state.
+    """Phase 1 的最简 relay 会话状态。
 
     中继会话状态，同时用于 transaction（事务）和 social（社交）两种 channel。
     通过 channel 字段区分。
@@ -91,7 +90,7 @@ class RelaySession:
 
 @dataclass(slots=True)
 class RelayTransactionRecord:
-    """Phase 2 transaction record.
+    """Phase 2 的事务记录。
 
     事务日志记录，追踪一个事务从创建到终结的完整生命周期。
     """
@@ -108,7 +107,7 @@ class RelayTransactionRecord:
 
 @dataclass(slots=True)
 class RelayTodoItem:
-    """Phase 2 lightweight todo projection.
+    """Phase 2 的轻量级待办事项投影。
 
     从事务确认中投影出的待办事项。供 todo_plugin 消费。
     """
@@ -121,7 +120,7 @@ class RelayTodoItem:
 
 @dataclass(slots=True)
 class RelayScheduleItem:
-    """Phase 2 lightweight schedule projection.
+    """Phase 2 的轻量级日程投影。
 
     从事务中投影出的日程安排。
     """
@@ -135,7 +134,7 @@ class RelayScheduleItem:
 
 @dataclass(slots=True)
 class RelayMemoryCandidate:
-    """Phase 3 memory-candidate projection.
+    """Phase 3 的记忆候选投影。
 
     从 relay 对话中投影出的记忆候选。高价值消息被标记为候选，
     供长期记忆系统消费。
@@ -151,7 +150,7 @@ class RelayMemoryCandidate:
 
 @dataclass(slots=True)
 class ProactiveChatHint:
-    """Recent non-relay chat message available to proactive decisions.
+    """供 proactive 决策使用的近期非 relay 聊天消息。
 
     普通聊天消息的快照，供 proactive 决策 LLM 分析是否有合适的
     时机主动联系伙伴 bot。
@@ -192,7 +191,7 @@ PROACTIVE_HOURLY_COUNTS: dict[tuple[str, str, str], int] = {} # proactive 每小
 # =============================================================================
 
 def reset_state() -> None:
-    """Clear all module-level state for plugin-local tests.
+    """清空所有模块级状态，供插件本地测试使用。
 
     清空所有运行时状态。主要用于测试环境。
     """
@@ -214,7 +213,7 @@ def reset_state() -> None:
 
 
 def remember_message(message_id: str, ttl_seconds: int = 3600) -> bool:
-    """Record a message id if it has not been seen recently.
+    """如果消息 ID 近期未出现过，则记录它。
 
     消息去重逻辑：记录已处理的消息 ID，如果短期内再次收到同一消息，
     返回 False 表示重复。
@@ -223,11 +222,11 @@ def remember_message(message_id: str, ttl_seconds: int = 3600) -> bool:
     防止缓存无限增长。
 
     Args:
-        message_id: Relay message id.
-        ttl_seconds: Expiry window for dedup records.
+        message_id: relay 消息 ID。
+        ttl_seconds: 去重记录的过期窗口。
 
     Returns:
-        ``True`` if this is a new message, otherwise ``False``.
+        如果这是一条新消息返回 ``True``，否则返回 ``False``。
     """
 
     now = time.time()
@@ -246,7 +245,7 @@ def remember_message(message_id: str, ttl_seconds: int = 3600) -> bool:
 
 
 def upsert_presence(record: PresenceRecord) -> None:
-    """Store presence state.
+    """存储在线状态。
 
     更新或插入伙伴 bot 的在线状态记录。
     """
@@ -255,7 +254,7 @@ def upsert_presence(record: PresenceRecord) -> None:
 
 
 def save_session(session: RelaySession) -> None:
-    """Store relay session state.
+    """存储 relay 会话状态。
 
     保存 relay 会话状态，自动更新 updated_at 时间戳。
     """
@@ -265,13 +264,13 @@ def save_session(session: RelaySession) -> None:
 
 
 def get_session(conversation_id: str) -> RelaySession | None:
-    """Return relay session state by id."""
+    """根据会话 ID 返回 relay 会话状态。"""
 
     return SESSION_TABLE.get(conversation_id)
 
 
 def audit(event: str, **data: object) -> None:
-    """Append a lightweight audit entry.
+    """追加一条轻量级审计日志条目。
 
     追加一条审计日志。审计日志用于调试和追踪插件行为。
     每条日志自动附加 event、time 和调用方提供的自定义字段。
@@ -281,31 +280,31 @@ def audit(event: str, **data: object) -> None:
 
 
 def save_transaction_record(record: RelayTransactionRecord) -> None:
-    """Persist transaction log entry."""
+    """持久化事务日志条目。"""
 
     TRANSACTION_LOG[record.conversation_id] = record
 
 
 def save_todo(todo: RelayTodoItem) -> None:
-    """Persist projected todo item."""
+    """持久化投影的待办事项。"""
 
     RELAY_TODOS[todo.todo_id] = todo
 
 
 def save_schedule(item: RelayScheduleItem) -> None:
-    """Persist projected schedule item."""
+    """持久化投影的日程条目。"""
 
     RELAY_SCHEDULES[item.schedule_id] = item
 
 
 def save_memory_candidate(candidate: RelayMemoryCandidate) -> None:
-    """Persist projected memory candidate."""
+    """持久化投影的记忆候选。"""
 
     RELAY_MEMORY_CANDIDATES[candidate.candidate_id] = candidate
 
 
 def save_proactive_chat_hint(hint: ProactiveChatHint, *, max_items: int = 60, ttl_seconds: int = 3600) -> None:
-    """Store a recent ordinary chat hint for proactive decisions.
+    """将近期普通聊天线索保存供 proactive 决策使用。
 
     保存一条普通聊天消息作为 proactive 决策的上下文线索。
     自动处理：

@@ -1,4 +1,4 @@
-"""Relay session helpers and Phase 2 transaction state machine."""
+"""Relay 会话辅助函数与 Phase 2 事务状态机。"""
 
 # =============================================================================
 # SessionManager - 会话管理器
@@ -68,7 +68,7 @@ from . import store
 
 
 class SessionManager:
-    """Provide transaction semantics without owning runtime state.
+    """提供事务语义但不持有运行时状态。
 
     SessionManager 自身是无状态的，所有数据存储在 store 模块的全局变量中。
     这允许多个 Service 实例共享同一份会话数据。
@@ -127,7 +127,7 @@ class SessionManager:
         default_ttl: int = 4,
         default_reply_budget: int = 3,
     ) -> RelayEnvelope:
-        """Build the Phase 1 outbound relay envelope.
+        """构建 Phase 1 出站 relay 信封。
 
         从框架的 MessageEnvelope 构建 relay 协议的 RelayEnvelope。
         根据 relay_context 中的 channel 字段分两路处理：
@@ -262,7 +262,7 @@ class SessionManager:
     # =========================================================================
 
     def relay_context_from_envelope(self, envelope: RelayEnvelope) -> dict[str, object]:
-        """Build Message.extra relay_context from an envelope.
+        """从信封构建 Message.extra relay_context。
 
         从 RelayEnvelope 构建 relay_context，注入到 Message.extra 中，
         供 Chatter 和其他组件使用。
@@ -288,7 +288,7 @@ class SessionManager:
     # =========================================================================
 
     def sync_inbound_transaction_session(self, envelope: RelayEnvelope) -> store.RelaySession | None:
-        """Persist inbound transaction state from a validated relay envelope.
+        """持久化经过验证的 relay 信封中的入站事务状态。
 
         处理入站事务消息，推进本地会话状态机。
         根据入站 intent 和当前会话状态，决定下一个状态。
@@ -362,7 +362,7 @@ class SessionManager:
         terminal: bool,
         local_bot_id: str,
     ) -> list[str]:
-        """Derive trusted inbound responders from local state only.
+        """仅从本地状态推导受信任的入站回复者列表。
 
         从本地状态推导允许回复的 bot 列表，不信任入站信封中的 allowed_responders。
         安全原则：只信任本地状态。
@@ -390,7 +390,7 @@ class SessionManager:
         local_bot_id: str,
         config: object,
     ) -> tuple[bool, str, dict[str, object]] | None:
-        """Publish a local todo projection after receiving a final confirm.
+        """收到最终 confirm 后在本地发布 Todo 投影。
 
         当收到对端的 confirm 消息时（事务最终确认），
         在本地也创建 Todo 投影。
@@ -430,7 +430,7 @@ class SessionManager:
     # =========================================================================
 
     def sync_inbound_social_session(self, envelope: RelayEnvelope) -> store.RelaySession | None:
-        """Persist inbound social state before the local bot replies.
+        """在本地 bot 回复之前持久化入站社交状态。
 
         处理入站社交消息，更新本地社交会话状态。
         """
@@ -486,7 +486,7 @@ class SessionManager:
         cooldown_seconds: int = 0,
         max_turns: int = 6,
     ) -> RelayEnvelope:
-        """Build a social-channel envelope with Phase 3 state machine controls.
+        """构建带 Phase 3 状态机控制的社交信道信封。
 
         构建社交通道的信封。如果与目标 bot 已存在社交会话，
         会推进会话阶段和轮次。
@@ -550,7 +550,7 @@ class SessionManager:
         peer_bot_id: str,
         conversation_id: str | None = None,
     ) -> store.RelaySession | None:
-        """Return the stored social session for a peer bot.
+        """返回与指定对端 bot 的已存储社交会话。
 
         查找与指定 bot 的社交会话。
         优先按 conversation_id 精确查找，否则找最新活跃会话。
@@ -578,7 +578,7 @@ class SessionManager:
         return max(pool, key=lambda session: session.updated_at) if pool else None
 
     def apply_expect_reply_overrides(self, envelope: RelayEnvelope) -> RelayEnvelope:
-        """Apply the frozen Phase 3 expect_reply override priority.
+        """应用固定的 Phase 3 expect_reply 覆盖优先级规则。
 
         确定是否期待回复的优先级规则：
         1. terminal=True → expect_reply=False（最高优先级）
@@ -604,7 +604,7 @@ class SessionManager:
         return envelope
 
     def save_social_session_from_envelope(self, envelope: RelayEnvelope) -> store.RelaySession:
-        """Persist minimal social-session state into the shared store."""
+        """将最小化的社交会话状态持久化到共享存储中。"""
 
         existing = store.get_session(envelope.conversation_id)
         session = store.RelaySession(
@@ -631,7 +631,7 @@ class SessionManager:
     # =========================================================================
 
     def maybe_create_memory_candidate(self, *, envelope: RelayEnvelope) -> None:
-        """Project high-value relay messages into memory candidates.
+        """将高价值 relay 消息投影为记忆候选项。
 
         筛选规则：
         - 只处理 social 和 transaction channel
@@ -666,7 +666,7 @@ class SessionManager:
     def validate_transaction_action(
         self, *, conversation_id: str, action: str, caller_bot: str, payload_complete: bool = True
     ) -> tuple[bool, str, store.RelaySession | None]:
-        """Run the six hard checks for a transaction tool.
+        """对事务 Tool 执行六项硬校验。
 
         六项硬校验（用于事务 Tool 执行前验证）：
         1. 会话是否存在 → invalid_payload
@@ -705,7 +705,7 @@ class SessionManager:
         action: str,
         caller_bot: str,
     ) -> store.RelaySession:
-        """Advance session after a validated tool action.
+        """在已验证的 Tool 操作后推进会话。
 
         在通过六项硬校验后，推进会话状态。
         - 更新 state
@@ -753,7 +753,7 @@ class SessionManager:
     def _find_session_for_outbound(
         self, *, context: dict[str, object], message_envelope: MessageEnvelope, to_bot: str
     ) -> store.RelaySession | None:
-        """Find an outbound session by explicit conversation id or peer bot id.
+        """通过显式 conversation_id 或 peer_bot_id 查找出站会话。
 
         查找顺序：
         1. context 中有明确 conversation_id → 直接查找
@@ -780,7 +780,7 @@ class SessionManager:
 
     @staticmethod
     def _infer_intent_from_session(session: store.RelaySession | None) -> str | None:
-        """Infer outbound intent from current transaction session state.
+        """从当前事务会话状态推断出站意图。
 
         从事务会话的当前状态推断出站意图：
         - accepted → "accept"（转发已接受状态）
@@ -803,7 +803,7 @@ class SessionManager:
 
     @classmethod
     def _transaction_intents(cls) -> set[str]:
-        """Return known transaction intents from the transition table."""
+        """从转换表中返回已知的事务意图。"""
 
         intents = set(cls._TRANSITIONS["created"])
         for transitions in cls._TRANSITIONS.values():
@@ -811,7 +811,7 @@ class SessionManager:
         return intents
 
     def _state_for_inbound_intent(self, intent: str, existing: store.RelaySession | None) -> str:
-        """Infer inbound state when the envelope did not carry one."""
+        """当信封未携带状态时推断入站状态。"""
 
         current = existing.state if existing is not None and existing.state else "created"
         next_state = self._TRANSITIONS.get(current, {}).get(intent)
@@ -827,7 +827,7 @@ class SessionManager:
 
     @staticmethod
     def _next_social_phase(current: str) -> str:
-        """Return the next social phase in the ordered chain."""
+        """返回有序链中的下一个社交阶段。"""
 
         try:
             idx = SessionManager._SOCIAL_PHASE_ORDER.index(current)
@@ -840,7 +840,7 @@ class SessionManager:
     def advance_social_turn(
         self, *, session: store.RelaySession, max_turns: int = 6, cooldown_seconds: int = 0
     ) -> store.RelaySession:
-        """Increment turn count and advance social phase when thresholds met.
+        """递增轮次计数，并在达到阈值时推进社交阶段。
 
         推进社交会话的轮次和阶段。
 
@@ -892,7 +892,7 @@ class SessionManager:
         return session
 
     def is_social_in_cooldown(self, session: store.RelaySession) -> bool:
-        """Return True if the session is in an active cooldown window."""
+        """如果会话处于活跃冷却窗口中则返回 True。"""
 
         if session.channel != "social":
             return False
@@ -901,7 +901,7 @@ class SessionManager:
         return False
 
     def force_social_ending(self, session: store.RelaySession) -> store.RelaySession:
-        """Immediately escalate a social session to ending."""
+        """立即将社交会话提升到 ending 状态。"""
 
         session.phase = "ending"
         session.terminal = True
@@ -935,7 +935,7 @@ def _extract_extra(message_envelope: MessageEnvelope) -> dict[str, object]:
 
 
 def _context_int(context: dict[str, object], key: str, default: int) -> int:
-    """Return a non-negative integer from relay context.
+    """从 relay_context 返回一个非负整数。
 
     从 relay_context 中安全提取整数，处理 None/非整数/负数等边界情况。
     """

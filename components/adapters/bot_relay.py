@@ -1,4 +1,4 @@
-"""MQTT adapter for the bot private relay plugin."""
+"""bot 私有中继插件的 MQTT 适配器。"""
 
 # =============================================================================
 # BotRelayAdapter - MQTT 通信适配器
@@ -58,14 +58,14 @@ _AUTH_TOKEN_FIELD = "auth_token"
 
 
 class BotRelayAdapter(BaseAdapter):
-    """Adapter exposing the ``bot_relay`` transport platform.
+    """暴露 ``bot_relay`` 传输平台的适配器。
 
     向 Neo-MoFox 框架暴露 bot_relay 传输平台。
     """
 
     adapter_name = "bot_relay"
     adapter_version = "0.1.0"
-    adapter_description = "Bot private relay adapter"
+    adapter_description = "Bot 私有中继 MQTT 适配器"
     platform = "bot_relay"
 
     # ── 常量 ──────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ class BotRelayAdapter(BaseAdapter):
 
     @property
     def relay_config(self) -> BotPrivateRelayConfig:
-        """Return typed plugin config."""
+        """返回类型化的插件配置。"""
 
         if not self.plugin or not isinstance(self.plugin.config, BotPrivateRelayConfig):
             raise RuntimeError("Bot private relay adapter requires BotPrivateRelayConfig")
@@ -103,7 +103,7 @@ class BotRelayAdapter(BaseAdapter):
     # =========================================================================
 
     async def on_adapter_loaded(self) -> None:
-        """Start MQTT background connection task via task_manager.
+        """启动 MQTT 后台连接任务（通过 task_manager）。
 
         适配器加载时：启动 MQTT 连接循环（后台 daemon 任务）。
         如果配置禁用了 relay，则跳过。
@@ -126,7 +126,7 @@ class BotRelayAdapter(BaseAdapter):
         )
 
     async def on_adapter_unloaded(self) -> None:
-        """Publish offline presence and stop MQTT background tasks.
+        """发布离线 presence 并停止 MQTT 后台任务。
 
         适配器卸载时：发布 offline 状态、取消所有后台任务、断开 MQTT。
         """
@@ -152,7 +152,7 @@ class BotRelayAdapter(BaseAdapter):
     # =========================================================================
 
     async def health_check(self) -> bool:
-        """Report MQTT client health instead of BaseAdapter transport health."""
+        """报告 MQTT 客户端健康状态，替代 BaseAdapter 的传输层健康检查。"""
 
         if self._mqtt_client is None:
             return False
@@ -162,7 +162,7 @@ class BotRelayAdapter(BaseAdapter):
         return True
 
     async def reconnect(self) -> None:
-        """Let the MQTT disconnect callback own reconnect scheduling.
+        """让 MQTT disconnect 回调自行管理重连调度。
 
         重连由 paho 的 disconnect 回调自动管理，不需要外部触发。
         """
@@ -174,7 +174,7 @@ class BotRelayAdapter(BaseAdapter):
     # =========================================================================
 
     def _parse_broker_url(self) -> tuple[str, int, bool]:
-        """Parse host, port, and TLS mode from relay_url plus config.
+        """从 relay_url 和配置中解析主机、端口和 TLS 模式。
 
         从配置的 relay_url 解析 MQTT Broker 的地址、端口和 TLS 模式。
         - mqtt:// → 1883 端口，无 TLS
@@ -190,7 +190,7 @@ class BotRelayAdapter(BaseAdapter):
         return host, port, use_tls
 
     def _build_tls_context(self) -> ssl.SSLContext:
-        """Build the MQTT TLS context from relay TLS configuration.
+        """从 relay TLS 配置构建 MQTT TLS 上下文。
 
         构建 SSL Context，支持：
         - CA 证书验证（可自定义 CA 文件）
@@ -217,7 +217,7 @@ class BotRelayAdapter(BaseAdapter):
         return context
 
     def _configure_mqtt_tls(self, client: Any) -> None:
-        """Apply TLS settings to a paho MQTT client before connect()."""
+        """在 connect() 之前为 paho MQTT 客户端应用 TLS 设置。"""
 
         tls_set_context = getattr(client, "tls_set_context", None)
         if not callable(tls_set_context):
@@ -225,7 +225,7 @@ class BotRelayAdapter(BaseAdapter):
         tls_set_context(self._build_tls_context())
 
     async def _mqtt_connect_loop(self) -> None:
-        """Full MQTT connect / subscribe / presence / heartbeat / reconnect loop.
+        """完整的 MQTT 连接 / 订阅 / presence / 心跳 / 重连循环。
 
         完整的 MQTT 连接流程：
         1. 导入 paho-mqtt（如果不可用则退出）
@@ -242,7 +242,7 @@ class BotRelayAdapter(BaseAdapter):
         try:
             import paho.mqtt.client as mqtt
         except Exception as error:  # pragma: no cover
-            logger.warning(f"paho-mqtt unavailable in current environment: {error}")
+            logger.warning(f"当前环境中 paho-mqtt 不可用: {error}")
             return
 
         config = self.relay_config.relay
@@ -283,13 +283,13 @@ class BotRelayAdapter(BaseAdapter):
         # ── 连接 Broker ──
         scheme = "mqtts" if use_tls else "mqtt"
         logger.info(
-            f"Bot private relay MQTT connecting to {scheme}://{broker_host}:{broker_port}"
+            f"Bot 私有中继 MQTT 正在连接 {scheme}://{broker_host}:{broker_port}"
         )
         try:
             client.connect(broker_host, broker_port, keepalive=self._KEEPALIVE)
         except Exception as exc:
             # 连接失败 → 指数退避重试
-            logger.warning(f"MQTT connect failed: {exc}; will retry")
+            logger.warning(f"MQTT 连接失败: {exc}; 将重试")
             self._reconnect_delay = min(
                 self._reconnect_delay * 2, self._RECONNECT_MAX_DELAY
             )
@@ -325,7 +325,7 @@ class BotRelayAdapter(BaseAdapter):
         reason_code: Any,
         properties: Any = None,
     ) -> None:
-        """Callback: connection established with broker (paho v2 API).
+        """回调：与 broker 建立连接（paho v2 API）。
 
         连接成功回调：
         1. 订阅自己的 inbox topic
@@ -341,22 +341,22 @@ class BotRelayAdapter(BaseAdapter):
             ok = reason_code == 0
 
         if ok:
-            logger.info("Bot private relay MQTT connected")
+            logger.info("Bot 私有中继 MQTT 已连接")
             config = self.relay_config.relay
 
             # 订阅自己的收件箱
             client.subscribe(f"bot/{config.bot_id}/inbox", qos=1)
-            logger.info(f"Subscribed to bot/{config.bot_id}/inbox")
+            logger.info(f"已订阅 bot/{config.bot_id}/inbox")
 
             # 订阅所有伙伴的在线状态
             for partner_bot_id in self.relay_config.presence.allowed_partner_bots:
                 client.subscribe(f"bot/presence/{partner_bot_id}", qos=1)
-                logger.info(f"Subscribed to bot/presence/{partner_bot_id}")
+                logger.info(f"已订阅 bot/presence/{partner_bot_id}")
 
             # 发布自己的在线状态
             self._publish_presence_sync(client, config.bot_id, "online")
         else:
-            logger.warning(f"MQTT connect returned reason_code: {reason_code}")
+            logger.warning(f"MQTT 连接返回 reason_code: {reason_code}")
 
     def _on_mqtt_disconnect(
         self,
@@ -366,7 +366,7 @@ class BotRelayAdapter(BaseAdapter):
         reason_code: Any = None,
         properties: Any = None,
     ) -> None:
-        """Callback: connection lost with broker (paho v2 API).
+        """回调：与 broker 失去连接（paho v2 API）。
 
         断开连接回调：
         - 防重入：_reconnecting 标志
@@ -374,16 +374,16 @@ class BotRelayAdapter(BaseAdapter):
         - run_coroutine_threadsafe：从 paho 线程调度到 asyncio 事件循环
         """
 
-        logger.info(f"MQTT disconnected (reason_code={reason_code})")
+        logger.info(f"MQTT 已断开 (reason_code={reason_code})")
 
         # ── 防重入 ──
         if self._reconnecting:
-            logger.debug("Reconnect already in flight; skipping duplicate schedule")
+            logger.debug("重连已在进行中; 跳过重复调度")
             return
 
         # ── 事件循环检查 ──
         if self._event_loop is None or self._event_loop.is_closed():
-            logger.warning("Disconnect callback fired without an event loop; cannot reconnect")
+            logger.warning("断开连接回调触发时无事件循环; 无法重连")
             return
 
         self._reconnecting = True
@@ -398,7 +398,7 @@ class BotRelayAdapter(BaseAdapter):
         )
 
     async def _mqtt_reconnect_delayed(self) -> None:
-        """Sleep then retry connection. Clears the reconnect flag on completion."""
+        """等待延迟后重试连接。完成后清除重连标志。"""
 
         try:
             await asyncio.sleep(self._reconnect_delay)
@@ -412,7 +412,7 @@ class BotRelayAdapter(BaseAdapter):
             self._reconnect_task_info = None
 
     def _on_mqtt_message_callback(self, client: Any, userdata: Any, msg: Any) -> None:
-        """Callback: message received from broker.
+        """回调：从 broker 收到消息。
 
         paho 的回调在线程池中执行，不能直接调用 asyncio 方法。
         因此使用 run_coroutine_threadsafe 将消息处理调度到事件循环。
@@ -421,11 +421,11 @@ class BotRelayAdapter(BaseAdapter):
         try:
             raw = msg.payload.decode("utf-8")
         except Exception as exc:
-            logger.warning(f"MQTT message decode failed on topic {msg.topic}: {exc}")
+            logger.warning(f"MQTT 消息在 topic {msg.topic} 上解码失败: {exc}")
             return
 
         # ── 日志（presence 消息按配置决定是否显示） ──
-        log_message = f"MQTT inbound on {msg.topic} ({len(raw)} bytes); dispatching to event loop"
+        log_message = f"MQTT 入站消息 on {msg.topic} ({len(raw)} bytes); 正在分发到事件循环"
         if str(msg.topic).startswith("bot/presence/"):
             if self.relay_config.relay.show_system_message_logs:
                 logger.info(log_message)
@@ -434,7 +434,7 @@ class BotRelayAdapter(BaseAdapter):
 
         # ── 事件循环检查 ──
         if self._event_loop is None or self._event_loop.is_closed():
-            logger.warning("MQTT message received but event loop unavailable; dropping")
+            logger.warning("收到 MQTT 消息但事件循环不可用; 丢弃")
             return
 
         # ── 调度到事件循环 ──
@@ -448,7 +448,7 @@ class BotRelayAdapter(BaseAdapter):
     # =========================================================================
 
     async def _publish_presence(self, status: str) -> None:
-        """Publish retained presence message (async-friendly)."""
+        """发布 retained presence 消息（异步友好版本）。"""
 
         if self._mqtt_client is None:
             return
@@ -461,7 +461,7 @@ class BotRelayAdapter(BaseAdapter):
             publish(topic, payload, qos=1, retain=True)
 
     def _publish_presence_sync(self, client: Any, bot_id: str, status: str) -> None:
-        """Publish presence synchronously from MQTT callback thread.
+        """从 MQTT 回调线程同步发布 presence。
 
         MQTT 回调线程是同步的，需要同步版本的 presence 发布。
         """
@@ -481,7 +481,7 @@ class BotRelayAdapter(BaseAdapter):
             publish(f"bot/presence/{bot_id}", payload, qos=1, retain=True)
 
     async def _heartbeat_loop(self, client: Any, bot_id: str) -> None:
-        """Publish presence periodically to signal online status.
+        """定期发布 presence 以保持在线状态。
 
         每 30 秒发布一次 online presence，保持在线状态。
         """
@@ -498,7 +498,7 @@ class BotRelayAdapter(BaseAdapter):
     # =========================================================================
 
     async def get_bot_info(self) -> dict[str, Any]:  # type: ignore[override]
-        """Return local bot identity for prompt display and sender fill."""
+        """返回本地 bot 身份信息，用于提示词显示和发送者填充。"""
 
         return {
             "bot_id": self.relay_config.relay.bot_id,
@@ -511,7 +511,7 @@ class BotRelayAdapter(BaseAdapter):
     # =========================================================================
 
     async def _send_platform_message(self, envelope: MessageEnvelope) -> None:  # type: ignore[override]
-        """Translate MessageEnvelope into RelayEnvelope and publish via MQTT.
+        """将 MessageEnvelope 转换为 RelayEnvelope 并通过 MQTT 发布。
 
         将框架的 MessageEnvelope 转换为 RelayEnvelope，然后通过 MQTT 发布。
         流程：
@@ -537,10 +537,10 @@ class BotRelayAdapter(BaseAdapter):
         await self.publish_relay_envelope(relay_envelope)
 
     async def publish_relay_envelope(self, envelope: RelayEnvelope) -> None:
-        """Publish a validated relay envelope through the current MQTT client."""
+        """通过当前 MQTT 客户端发布已验证的 relay 信封。"""
 
         if self._mqtt_client is None:
-            logger.info("MQTT client not connected; skipping live publish in current environment")
+            logger.info("MQTT 客户端未连接; 跳过在当前环境中的实时发布")
             return
         payload = json.dumps(self._payload_dict_for_envelope(envelope), ensure_ascii=False)
         topic = self._topic_for_envelope(envelope)
@@ -553,7 +553,7 @@ class BotRelayAdapter(BaseAdapter):
     # =========================================================================
 
     async def from_platform_message(self, raw: Any) -> MessageEnvelope | None:  # type: ignore[override]
-        """Convert raw relay payload into MessageEnvelope or consume system events.
+        """将原始 relay 数据转换为 MessageEnvelope 或消费系统事件。
 
         入站消息处理的主入口。完整的处理流水线：
         1. 解析原始数据（支持 str/bytes/dict）
@@ -597,7 +597,7 @@ class BotRelayAdapter(BaseAdapter):
         presence_manager = PresenceManager(self.relay_config)
         if relay_envelope.to_bot not in {self.relay_config.relay.bot_id, "*"}:
             logger.warning(
-                f"Ignoring relay envelope for different target bot: {relay_envelope.to_bot}"
+                f"忽略发往其他目标 bot 的 relay 信封: {relay_envelope.to_bot}"
             )
             return None
 
@@ -605,7 +605,7 @@ class BotRelayAdapter(BaseAdapter):
         # system channel 不检查白名单（presence 更新等不受限制）
         if relay_envelope.channel != "system" and not presence_manager.is_allowed(relay_envelope.from_bot):
             logger.warning(
-                "Rejecting relay envelope from unknown partner bot: "
+                "拒绝来自未知伙伴 bot 的 relay 信封: "
                 f"from_bot={relay_envelope.from_bot}, conversation_id={relay_envelope.conversation_id}"
             )
             store.audit(
@@ -629,7 +629,7 @@ class BotRelayAdapter(BaseAdapter):
         # 如果没有本地会话记录，拒绝事务的后续消息（accept/confirm 等）
         if self._is_orphan_transaction_continuation(relay_envelope):
             logger.warning(
-                "Dropping orphan relay transaction continuation: "
+                "丢弃孤儿 relay 事务后续消息: "
                 f"from_bot={relay_envelope.from_bot}, "
                 f"conversation_id={relay_envelope.conversation_id}, intent={relay_envelope.intent}"
             )
@@ -663,7 +663,7 @@ class BotRelayAdapter(BaseAdapter):
         if inbound_todo_result is not None:
             ok, status, result = inbound_todo_result
             logger.info(
-                "Inbound relay final decision todo projection handled: "
+                "入站 relay 最终决策 todo 投影已处理: "
                 f"conversation_id={relay_envelope.conversation_id}, "
                 f"owner_bot={self.relay_config.relay.bot_id}, "
                 f"peer_bot_id={relay_envelope.from_bot}, "
@@ -702,7 +702,7 @@ class BotRelayAdapter(BaseAdapter):
 
     @staticmethod
     def _is_orphan_transaction_continuation(envelope: RelayEnvelope) -> bool:
-        """Reject transaction follow-ups that have no local session.
+        """拒绝没有本地会话的事务后续消息。
 
         判断是否为孤儿事务消息：事务 channel 且 intent 不是 notify/request/invite，
         但本地没有对应的会话记录。
@@ -713,7 +713,7 @@ class BotRelayAdapter(BaseAdapter):
         return store.get_session(envelope.conversation_id) is None
 
     async def _publish_sender_not_allowed_error(self, inbound: RelayEnvelope) -> None:
-        """Send an explicit protocol error for rejected non-system envelopes.
+        """为被拒绝的非系统消息发送显式协议错误。
 
         当入站消息的发送方不在白名单中时，向发送方回复一个错误信封。
         """
@@ -736,7 +736,7 @@ class BotRelayAdapter(BaseAdapter):
             no_relay=True,
             payload={
                 "code": "sender_not_allowed",
-                "text": "Sender bot is not allowed to contact this relay endpoint.",
+                "text": "发送方 bot 未被允许联系此 relay 端点。",
                 "rejected_channel": inbound.channel,
                 "rejected_intent": inbound.intent,
             },
@@ -746,7 +746,7 @@ class BotRelayAdapter(BaseAdapter):
             await self.publish_relay_envelope(error_envelope)
         except Exception as exc:
             logger.error(
-                "Failed to publish sender-not-allowed relay error: "
+                "发送 sender-not-allowed relay 错误失败: "
                 f"from_bot={inbound.from_bot}, conversation_id={inbound.conversation_id}, error={exc}",
                 exc_info=True,
             )
@@ -760,7 +760,7 @@ class BotRelayAdapter(BaseAdapter):
         envelope: RelayEnvelope,
         session: store.RelaySession | None,
     ) -> store.RelaySession | None:
-        """Confirm an inbound accept only after local projection succeeds.
+        """仅在本地投影成功后确认入站 accept。
 
         当收到对端的 accept 消息时，如果满足以下条件，自动发送 confirm：
         1. channel=transaction, intent=accept
@@ -792,7 +792,7 @@ class BotRelayAdapter(BaseAdapter):
         )
         if not ok or checked_session is None:
             logger.warning(
-                "Inbound accept auto-confirm rejected by validation: "
+                "入站 accept 自动确认被校验拒绝: "
                 f"conversation_id={envelope.conversation_id}, status={code}"
             )
             return session
@@ -801,7 +801,7 @@ class BotRelayAdapter(BaseAdapter):
         record = store.TRANSACTION_LOG.get(envelope.conversation_id)
         if record is None:
             logger.warning(
-                "Inbound accept auto-confirm skipped: transaction record missing, "
+                "入站 accept 自动确认已跳过: 事务记录缺失, "
                 f"conversation_id={envelope.conversation_id}"
             )
             return session
@@ -812,7 +812,7 @@ class BotRelayAdapter(BaseAdapter):
             confirm_envelope.validate()
         except Exception as exc:
             logger.error(
-                "Inbound accept auto-confirm envelope invalid; not publishing confirm: "
+                "入站 accept 自动确认信封无效; 不发布 confirm: "
                 f"conversation_id={envelope.conversation_id}, error={exc}",
                 exc_info=True,
             )
@@ -827,7 +827,7 @@ class BotRelayAdapter(BaseAdapter):
         )
         if not bridge_ok:
             logger.warning(
-                "Inbound accept auto-confirm rejected by todo bridge; not publishing confirm: "
+                "入站 accept 自动确认被 todo bridge 拒绝; 不发布 confirm: "
                 f"conversation_id={envelope.conversation_id}, status={bridge_status}, "
                 f"todo_uid={bridge_result.get('todo_uid', '')}"
             )
@@ -842,7 +842,7 @@ class BotRelayAdapter(BaseAdapter):
             )
         except Exception as exc:
             logger.error(
-                "Inbound accept auto-confirm failed while applying local state; not publishing confirm: "
+                "入站 accept 自动确认在应用本地状态时失败; 不发布 confirm: "
                 f"conversation_id={envelope.conversation_id}, error={exc}",
                 exc_info=True,
             )
@@ -853,20 +853,20 @@ class BotRelayAdapter(BaseAdapter):
             await self.publish_relay_envelope(confirm_envelope)
         except Exception as exc:
             logger.error(
-                "Inbound accept auto-confirm publish failed after local confirm: "
+                "入站 accept 自动确认在本地确认后发布失败: "
                 f"conversation_id={envelope.conversation_id}, error={exc}",
                 exc_info=True,
             )
         else:
             logger.info(
-                "Inbound accept auto-confirm published: "
+                "入站 accept 自动确认已发布: "
                 f"conversation_id={envelope.conversation_id}, peer_bot_id={envelope.from_bot}, "
                 f"todo_bridge_status={bridge_status}"
             )
         return confirmed_session
 
     def _build_auto_confirm_envelope(self, inbound: RelayEnvelope) -> RelayEnvelope:
-        """Build the outbound confirm envelope for an accepted transaction."""
+        """为已接受的事务构建出站 confirm 信封。"""
 
         return RelayEnvelope(
             conversation_id=inbound.conversation_id,

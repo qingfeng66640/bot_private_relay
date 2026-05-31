@@ -58,10 +58,3 @@ enabled = true
 platforms = ["qq"]
 chat_types = ["group"]
 blocked_bot_ids = []
-
-[social_quotas]
-
-[social_quotas.bot_b]
-max_per_day = 5
-max_per_hour = 2
-cooldown_seconds = 300
