@@ -103,6 +103,8 @@ class RelayTransactionRecord:
     final_intent: str | None = None       # 最终意图（终态时设置）
     topic: str = ""                       # 事务主题
     summary: str = ""                     # 事务摘要
+    due_at_text: str = ""                 # 事务确认时提取的自然语言执行时间
+    due_at: float | None = None            # 已结构化的执行时间戳（可选）
 
 
 @dataclass(slots=True)

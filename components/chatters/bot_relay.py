@@ -103,7 +103,7 @@ class BotRelayChatter(BaseChatter):
 7. transaction channel 且事务未关闭时，如果要发送文本，必须同时调用一个事务 tool 表示协议动作；不要只用 send_text 表达接受、确认、拒绝、取消或改期。
 8. 事务状态为 pending_reply 时，先调用 accept_transaction 表示接下事务；不要从 pending_reply 直接调用 confirm_transaction。
 9. accept_transaction 只表示接下原提案，不会写入 todo；accept 后由对端最终 confirm。
-10. 事务状态为 accepted 时，只有当前 bot 是 allowed_responders 时才调用 confirm_transaction；confirm_transaction 会直接进入 closed 终态，并触发 todo bridge。
+10. 事务状态为 accepted 时，只有当前 bot 是 allowed_responders 时才调用 confirm_transaction；confirm_transaction 会直接进入 closed 终态，并触发 todo bridge。若双方已经确认未来执行时间，调用 confirm_transaction 时必须填写 due_at_text；没有明确时间则留空。
 11. reschedule_transaction 表示提出替代方案，进入 reschedule_requested；对端若接受当前改期方案，应直接调用 confirm_transaction。
 12. ack_transaction 和 close_transaction 会关闭事务；只在无需继续协作或需要收束时使用。
 13. 回复应简洁、明确、可执行，优先降低歧义，避免情绪化延展。
@@ -851,6 +851,7 @@ class BotRelayChatter(BaseChatter):
             "必须选择 accept_transaction / confirm_transaction / decline_transaction / "
             "reschedule_transaction / cancel_transaction / close_transaction / "
             "ack_transaction / pass_and_wait 之一。"
+            "如果调用 confirm_transaction 且双方已经明确未来执行时间，必须填写 due_at_text。"
             "如果要发文本，请同时调用对应事务 tool 和 send_text。"
         )
 
@@ -929,6 +930,8 @@ class BotRelayChatter(BaseChatter):
             lines.append("- 注意：当前协议不期待你自动继续回复，除非新的上文再次明确要求。")
         elif channel == "transaction":
             lines.append("- 注意：当前处于事务沟通，请优先给出清晰、低歧义、可执行的回应。")
+            if state in {"accepted", "reschedule_requested"}:
+                lines.append("- 如果你要确认事务且已有明确未来执行时间，confirm_transaction 必须填写 due_at_text。")
         elif channel == "social":
             lines.append("- 注意：当前处于 bot 社交沟通，但仍应保持节制并尊重预算/终态。")
         return "\n".join(lines)

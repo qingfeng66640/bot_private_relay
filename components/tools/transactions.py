@@ -57,6 +57,7 @@ async def _execute_transaction_action(
     conversation_id: str,
     caller_bot: str,
     reason: str,
+    due_at_text: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     """校验并应用事务操作。
 
@@ -114,6 +115,8 @@ async def _execute_transaction_action(
                     "reason": reason,
                 }
 
+            record.due_at_text = due_at_text.strip()
+
             ok, bridge_status, bridge_result = await TodoBridge(config).publish_final_decision(
                 record=record,
                 final_intent=action_intent,
@@ -152,6 +155,7 @@ async def _execute_transaction_action(
         "reason": reason,
     }
     if action_intent == "confirm":
+        payload["due_at_text"] = due_at_text.strip()
         payload["todo_bridge_status"] = bridge_status
         payload["todo_bridge"] = bridge_result
 
@@ -211,12 +215,21 @@ class ConfirmTransactionTool(BaseTool):
     """
 
     tool_name = "confirm_transaction"
-    tool_description = "对事务请求执行确认，并执行六项硬校验。"
+    tool_description = (
+        "对事务请求执行确认，并执行六项硬校验。若确认内容包含未来执行时间，"
+        "必须填写 due_at_text；没有明确时间则留空。"
+    )
     action_intent = "confirm"
     chatter_allow = RELAY_CHATTER_ALLOW
     associated_platforms = RELAY_ASSOCIATED_PLATFORMS
 
-    async def execute(self, conversation_id: str, caller_bot: str, reason: str = "") -> tuple[bool, dict[str, Any]]:
+    async def execute(
+        self,
+        conversation_id: str,
+        caller_bot: str,
+        reason: str = "",
+        due_at_text: str = "",
+    ) -> tuple[bool, dict[str, Any]]:
         """确认事务并在启用时发布 Todo 投影。"""
         return await _execute_transaction_action(
             plugin=self.plugin,
@@ -224,6 +237,7 @@ class ConfirmTransactionTool(BaseTool):
             conversation_id=conversation_id,
             caller_bot=caller_bot,
             reason=reason,
+            due_at_text=due_at_text,
         )
 
 

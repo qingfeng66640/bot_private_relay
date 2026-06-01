@@ -97,6 +97,7 @@ class TodoBridge:
         )
 
         # ── 5. 构建事件 payload ──
+        relay_todo_key = f"bot_relay.todo:{owner_bot}"
         payload = {
             "source": "bot_private_relay",
             "conversation_id": record.conversation_id,
@@ -108,8 +109,9 @@ class TodoBridge:
             "participants": [record.from_bot, record.to_bot],  # 事务参与者列表
             "title": plan_title,
             "summary": record.summary or record.topic or "relay task",
-            "due_at": None,
-            "source_stream_id": f"bot_relay:{owner_bot}",
+            "due_at": record.due_at,
+            "due_at_text": record.due_at_text,
+            "relay_todo_key": relay_todo_key,
             "peer_bot_id": normalized_peer_bot_id,
             "source_message_id": "",
         }
@@ -124,6 +126,7 @@ class TodoBridge:
             f"conversation_id={record.conversation_id}, "
             f"owner_bot={owner_bot}, "
             f"peer_bot_id={normalized_peer_bot_id}, "
+            f"relay_todo_key={relay_todo_key}, "
             f"title={plan_title}"
         )
 

@@ -78,7 +78,7 @@ class DynamicSocialLimiter:
 
         Args:
             target_bot_id: 目标 bot 的 ID。
-            source: 触发来源：impulse（内部主动触发）/ event（事件）/ user_command（用户指令）。
+            source: 触发来源：impulse / event / user_command / todo_execution。
 
         Returns:
             (是否允许, 状态码)
@@ -246,13 +246,16 @@ class RelaySocialContactTool(BaseTool):
         """将自由文本的原因映射到配额来源桶。
 
         将自由文本的原因映射到配额来源桶。
-        - impulse / internal → "impulse"
-        - event / 事件 → "event"
-        - user_command / command / 用户指令 → "user_command"
+        - impulse / internal -> "impulse"
+        - event / 事件 -> "event"
+        - user_command / command / 用户指令 -> "user_command"
+        - todo_execution -> "todo_execution"
         - 其他 → "event"（默认）
         """
 
         normalized = reason.strip().lower()
+        if normalized == "todo_execution":
+            return "todo_execution"
         if normalized in {"impulse", "internal"}:
             return "impulse"
         if normalized in {"event", "事件"}:
