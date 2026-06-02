@@ -81,6 +81,8 @@ class BotRelayAdapter(BaseAdapter):
         self._heartbeat_task_info: Any | None = None     # 心跳任务 info
         self._reconnect_task_info: Any | None = None     # 重连任务 info
         self._reconnecting: bool = False                 # 是否正在重连（防重入）
+        self._shutting_down: bool = False                # 是否正在卸载，抑制本地断开触发重连
+        self._reconnect_generation: int = 0              # 重连任务世代号，避免旧任务复活连接
         self._event_loop: asyncio.AbstractEventLoop | None = None  # 捕获的事件循环
         self._session_manager = SessionManager()         # 会话管理器
         self._policy_engine = PolicyEngine()             # 策略引擎
@@ -113,6 +115,8 @@ class BotRelayAdapter(BaseAdapter):
             logger.info("Bot private relay adapter disabled by config")
             return
 
+        self._shutting_down = False
+
         # ── 捕获事件循环 ──
         # paho-mqtt 的回调在非 asyncio 线程中执行，需要用 run_coroutine_threadsafe
         # 把异步操作调度回事件循环。
@@ -131,21 +135,23 @@ class BotRelayAdapter(BaseAdapter):
         适配器卸载时：发布 offline 状态、取消所有后台任务、断开 MQTT。
         """
 
+        self._shutting_down = True
+        self._reconnecting = False
+        self._reconnect_generation += 1
+
         # ── 发布离线状态 ──
         await self._publish_presence("offline")
 
         # ── 取消心跳和 MQTT 任务 ──
-        for task_info in (self._mqtt_task_info, self._heartbeat_task_info):
+        for task_info in (self._mqtt_task_info, self._heartbeat_task_info, self._reconnect_task_info):
             if task_info:
                 get_task_manager().cancel_task(task_info.task_id)
         self._mqtt_task_info = None
         self._heartbeat_task_info = None
+        self._reconnect_task_info = None
 
         # ── 停止 MQTT 客户端 ──
-        if self._mqtt_client and hasattr(self._mqtt_client, "loop_stop"):
-            self._mqtt_client.loop_stop()
-            self._mqtt_client.disconnect()
-        self._mqtt_client = None
+        self._stop_mqtt_client()
 
     # =========================================================================
     # 健康检查 / 重连接口
@@ -245,8 +251,12 @@ class BotRelayAdapter(BaseAdapter):
             logger.warning(f"当前环境中 paho-mqtt 不可用: {error}")
             return
 
+        if self._shutting_down:
+            return
+
         config = self.relay_config.relay
         broker_host, broker_port, use_tls = self._parse_broker_url()
+        client_id = f"bot_relay_{config.bot_id}"
 
         # ── 清理旧状态 ──
         self._cancel_heartbeat_task()
@@ -255,7 +265,7 @@ class BotRelayAdapter(BaseAdapter):
         # ── 创建 MQTT 客户端 ──
         client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,  # paho v2 API
-            client_id=f"bot_relay_{config.bot_id}",                 # 唯一客户端 ID
+            client_id=client_id,                                     # 唯一客户端 ID
             clean_session=True,
             protocol=mqtt.MQTTv311,
         )
@@ -283,7 +293,8 @@ class BotRelayAdapter(BaseAdapter):
         # ── 连接 Broker ──
         scheme = "mqtts" if use_tls else "mqtt"
         logger.info(
-            f"Bot 私有中继 MQTT 正在连接 {scheme}://{broker_host}:{broker_port}"
+            "Bot 私有中继 MQTT 正在连接 "
+            f"{scheme}://{broker_host}:{broker_port} client_id={client_id}"
         )
         try:
             client.connect(broker_host, broker_port, keepalive=self._KEEPALIVE)
@@ -294,6 +305,8 @@ class BotRelayAdapter(BaseAdapter):
                 self._reconnect_delay * 2, self._RECONNECT_MAX_DELAY
             )
             await asyncio.sleep(self._reconnect_delay)
+            if self._shutting_down:
+                return
             self._mqtt_task_info = get_task_manager().create_task(
                 self._mqtt_connect_loop(),
                 name="bot_private_relay_mqtt",
@@ -371,10 +384,18 @@ class BotRelayAdapter(BaseAdapter):
         断开连接回调：
         - 防重入：_reconnecting 标志
         - 指数退避：延迟翻倍
-        - run_coroutine_threadsafe：从 paho 线程调度到 asyncio 事件循环
+        - call_soon_threadsafe：从 paho 线程调度到 asyncio 事件循环
         """
 
-        logger.info(f"MQTT 已断开 (reason_code={reason_code})")
+        config = self.relay_config.relay
+        logger.info(
+            "MQTT 已断开 "
+            f"(client_id=bot_relay_{config.bot_id}, reason_code={reason_code})"
+        )
+
+        if self._shutting_down or client is not self._mqtt_client:
+            logger.debug("忽略本地清理或旧 MQTT 客户端触发的断开回调")
+            return
 
         # ── 防重入 ──
         if self._reconnecting:
@@ -392,24 +413,44 @@ class BotRelayAdapter(BaseAdapter):
         )
 
         # ── 调度重连到事件循环 ──
-        asyncio.run_coroutine_threadsafe(
-            self._mqtt_reconnect_delayed(),
-            self._event_loop,
+        self._event_loop.call_soon_threadsafe(
+            self._schedule_mqtt_reconnect,
+            self._reconnect_delay,
         )
 
-    async def _mqtt_reconnect_delayed(self) -> None:
+    def _schedule_mqtt_reconnect(self, delay: int) -> None:
+        """Create one cancellable delayed reconnect task on the asyncio loop."""
+
+        if self._shutting_down:
+            self._reconnecting = False
+            return
+        if self._reconnect_task_info and not self._reconnect_task_info.is_done():
+            return
+
+        self._reconnect_generation += 1
+        generation = self._reconnect_generation
+        self._reconnect_task_info = get_task_manager().create_task(
+            self._mqtt_reconnect_delayed(generation, delay),
+            name="bot_private_relay_mqtt_reconnect",
+            daemon=True,
+        )
+
+    async def _mqtt_reconnect_delayed(self, generation: int, delay: int) -> None:
         """等待延迟后重试连接。完成后清除重连标志。"""
 
         try:
-            await asyncio.sleep(self._reconnect_delay)
+            await asyncio.sleep(delay)
+            if self._shutting_down or generation != self._reconnect_generation:
+                return
             self._mqtt_task_info = get_task_manager().create_task(
                 self._mqtt_connect_loop(),
                 name="bot_private_relay_mqtt",
                 daemon=True,
             )
         finally:
-            self._reconnecting = False
-            self._reconnect_task_info = None
+            if generation == self._reconnect_generation:
+                self._reconnecting = False
+                self._reconnect_task_info = None
 
     def _on_mqtt_message_callback(self, client: Any, userdata: Any, msg: Any) -> None:
         """回调：从 broker 收到消息。
@@ -490,7 +531,10 @@ class BotRelayAdapter(BaseAdapter):
             try:
                 self._publish_presence_sync(client, bot_id, "online")
                 await asyncio.sleep(self._HEARTBEAT_INTERVAL)
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"MQTT presence 心跳发布失败: {exc}")
                 await asyncio.sleep(5)  # 出错时短暂等待
 
     # =========================================================================
@@ -1018,10 +1062,13 @@ class BotRelayAdapter(BaseAdapter):
 
         if self._mqtt_client is None:
             return
-        loop_stop = getattr(self._mqtt_client, "loop_stop", None)
+        client = self._mqtt_client
+        self._mqtt_client = None
+        if hasattr(client, "on_disconnect"):
+            client.on_disconnect = None
+        loop_stop = getattr(client, "loop_stop", None)
         if callable(loop_stop):
             loop_stop()
-        disconnect = getattr(self._mqtt_client, "disconnect", None)
+        disconnect = getattr(client, "disconnect", None)
         if callable(disconnect):
             disconnect()
-        self._mqtt_client = None
