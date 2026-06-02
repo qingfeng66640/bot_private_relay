@@ -33,6 +33,7 @@ import asyncio
 import hmac
 import json
 import ssl
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -73,6 +74,8 @@ class BotRelayAdapter(BaseAdapter):
     _RECONNECT_MIN_DELAY = 10     # 重连最小延迟（秒）
     _RECONNECT_MAX_DELAY = 120    # 重连最大延迟（秒）
     _KEEPALIVE = 20               # MQTT keepalive（秒），需小于 broker 空闲超时
+    _FAST_DISCONNECT_WINDOW = 10  # 连接后快速断开的判定窗口（秒）
+    _FAST_DISCONNECT_LIMIT = 5    # 连续快速断开次数，超过后暂停重连
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -83,6 +86,9 @@ class BotRelayAdapter(BaseAdapter):
         self._reconnecting: bool = False                 # 是否正在重连（防重入）
         self._shutting_down: bool = False                # 是否正在卸载，抑制本地断开触发重连
         self._reconnect_generation: int = 0              # 重连任务世代号，避免旧任务复活连接
+        self._last_connect_monotonic: float | None = None # 最近一次连接成功时间
+        self._fast_disconnect_count: int = 0             # 连续快速断开次数
+        self._reconnect_suspended: bool = False          # 重复快速断开后暂停重连
         self._event_loop: asyncio.AbstractEventLoop | None = None  # 捕获的事件循环
         self._session_manager = SessionManager()         # 会话管理器
         self._policy_engine = PolicyEngine()             # 策略引擎
@@ -116,6 +122,8 @@ class BotRelayAdapter(BaseAdapter):
             return
 
         self._shutting_down = False
+        self._reconnect_suspended = False
+        self._fast_disconnect_count = 0
 
         # ── 捕获事件循环 ──
         # paho-mqtt 的回调在非 asyncio 线程中执行，需要用 run_coroutine_threadsafe
@@ -251,7 +259,7 @@ class BotRelayAdapter(BaseAdapter):
             logger.warning(f"当前环境中 paho-mqtt 不可用: {error}")
             return
 
-        if self._shutting_down:
+        if self._shutting_down or self._reconnect_suspended:
             return
 
         config = self.relay_config.relay
@@ -272,6 +280,7 @@ class BotRelayAdapter(BaseAdapter):
         client.on_connect = self._on_mqtt_connect
         client.on_message = self._on_mqtt_message_callback
         client.on_disconnect = self._on_mqtt_disconnect
+        self._configure_mqtt_reconnect(client)
 
         # ── 设置遗嘱消息（Will Message） ──
         # 当客户端异常断开时，broker 自动发布此消息
@@ -356,6 +365,8 @@ class BotRelayAdapter(BaseAdapter):
         if ok:
             logger.info("Bot 私有中继 MQTT 已连接")
             config = self.relay_config.relay
+            self._last_connect_monotonic = time.monotonic()
+            self._reconnecting = False
 
             # 订阅自己的收件箱
             client.subscribe(f"bot/{config.bot_id}/inbox", qos=1)
@@ -381,10 +392,8 @@ class BotRelayAdapter(BaseAdapter):
     ) -> None:
         """回调：与 broker 失去连接（paho v2 API）。
 
-        断开连接回调：
-        - 防重入：_reconnecting 标志
-        - 指数退避：延迟翻倍
-        - call_soon_threadsafe：从 paho 线程调度到 asyncio 事件循环
+        断开连接回调只记录状态并让 paho 自带的自动重连接管。
+        插件不再手动创建新 client，避免与 paho 的 loop_start 自动重连叠加。
         """
 
         config = self.relay_config.relay
@@ -397,26 +406,56 @@ class BotRelayAdapter(BaseAdapter):
             logger.debug("忽略本地清理或旧 MQTT 客户端触发的断开回调")
             return
 
-        # ── 防重入 ──
-        if self._reconnecting:
-            logger.debug("重连已在进行中; 跳过重复调度")
-            return
-
-        # ── 事件循环检查 ──
-        if self._event_loop is None or self._event_loop.is_closed():
-            logger.warning("断开连接回调触发时无事件循环; 无法重连")
+        if self._suspend_on_repeated_fast_disconnect(client, reason_code):
             return
 
         self._reconnecting = True
-        self._reconnect_delay = min(
-            self._reconnect_delay * 2, self._RECONNECT_MAX_DELAY
+        logger.warning(
+            "MQTT 连接断开；将由 paho 按退避策略自动重连 "
+            f"(min={self._RECONNECT_MIN_DELAY}s, max={self._RECONNECT_MAX_DELAY}s)"
         )
 
-        # ── 调度重连到事件循环 ──
-        self._event_loop.call_soon_threadsafe(
-            self._schedule_mqtt_reconnect,
-            self._reconnect_delay,
+    def _configure_mqtt_reconnect(self, client: Any) -> None:
+        """Configure paho's own reconnect backoff."""
+
+        reconnect_delay_set = getattr(client, "reconnect_delay_set", None)
+        if callable(reconnect_delay_set):
+            reconnect_delay_set(
+                min_delay=self._RECONNECT_MIN_DELAY,
+                max_delay=self._RECONNECT_MAX_DELAY,
+            )
+
+    def _suspend_on_repeated_fast_disconnect(self, client: Any, reason_code: Any) -> bool:
+        """Pause reconnects when a likely MQTT client_id conflict is detected."""
+
+        now = time.monotonic()
+        uptime = None if self._last_connect_monotonic is None else now - self._last_connect_monotonic
+        if uptime is None or uptime >= self._FAST_DISCONNECT_WINDOW:
+            self._fast_disconnect_count = 0
+            return False
+
+        self._fast_disconnect_count += 1
+        if self._fast_disconnect_count < self._FAST_DISCONNECT_LIMIT:
+            logger.warning(
+                "MQTT 连接在成功后快速断开；如果持续发生，通常表示另一个进程使用了相同 client_id "
+                f"(client_id=bot_relay_{self.relay_config.relay.bot_id}, "
+                f"uptime={uptime:.1f}s, count={self._fast_disconnect_count}, reason_code={reason_code})"
+            )
+            return False
+
+        self._reconnect_suspended = True
+        self._reconnecting = False
+        logger.error(
+            "MQTT 连接连续快速断开，已暂停自动重连以避免重连风暴；"
+            "请检查是否有另一个 Neo-MoFox 实例使用相同 relay.bot_id/client_id "
+            f"(client_id=bot_relay_{self.relay_config.relay.bot_id}, reason_code={reason_code})"
         )
+
+        if self._event_loop is not None and not self._event_loop.is_closed():
+            self._event_loop.call_soon_threadsafe(self._stop_mqtt_client)
+        else:
+            self._stop_mqtt_client()
+        return True
 
     def _schedule_mqtt_reconnect(self, delay: int) -> None:
         """Create one cancellable delayed reconnect task on the asyncio loop."""
