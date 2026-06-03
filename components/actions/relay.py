@@ -18,10 +18,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
-from src.core.components.base.action import BaseAction
+from src.app.plugin_system.base import BaseAction
 from src.core.models.message import Message, MessageType
 from src.kernel.logger import get_logger
 
@@ -46,9 +46,9 @@ class BotRelaySendTextAction(BaseAction):
 
     async def execute(
         self,
-        content: str,
-        reply_to: str | None = None,
-        at: str | None = None,
+        content: Annotated[str, "要发送给对端 bot 的正文，不包含行为理由、内心独白或格式说明"],
+        reply_to: Annotated[str | None, "兼容默认 send_text schema；bot_relay 私聊不使用引用回复"] = None,
+        at: Annotated[str | None, "兼容默认 send_text schema；bot_relay 私聊不使用 @"] = None,
     ) -> AsyncGenerator[tuple[bool, str] | None, None]:
         """向当前 relay 对端发送文本消息。
 
@@ -231,7 +231,10 @@ class BotRelayPassAndWaitAction(BaseAction):
     action_description = "当前 relay 对话轮次不再主动发送内容，等待对端 bot 的下一条消息；可传入 seconds 表示稍后恢复。"
     chatter_allow = ["bot_relay_chatter"]
 
-    async def execute(self, seconds: float | None = None) -> tuple[bool, str]:
+    async def execute(
+        self,
+        seconds: Annotated[float | None, "等待秒数；为空时等待对端新消息"] = None,
+    ) -> tuple[bool, str]:
         """等待下一条 relay 消息或可选定时器。
 
         Args:
@@ -256,7 +259,10 @@ class BotRelayStopConversationAction(BaseAction):
     action_description = "结束当前 relay 对话轮次，并在指定分钟数内避免主动继续。"
     chatter_allow = ["bot_relay_chatter"]
 
-    async def execute(self, minutes: float) -> tuple[bool, str]:
+    async def execute(
+        self,
+        minutes: Annotated[float, "结束当前 relay 对话后的冷却时间，单位为分钟"],
+    ) -> tuple[bool, str]:
         """结束当前 relay 对话轮次。
 
         Args:

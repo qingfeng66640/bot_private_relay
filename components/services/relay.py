@@ -20,7 +20,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from src.core.components.base import BaseService
+from src.app.plugin_system.base import BaseService
 
 from ...runtime import store
 from ...runtime.proactive import run_proactive_tick

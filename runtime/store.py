@@ -278,7 +278,8 @@ def audit(event: str, **data: object) -> None:
     每条日志自动附加 event、time 和调用方提供的自定义字段。
     """
 
-    AUDIT_LOG.append({"event": event, "time": time.time(), **data})
+    clean_data = {key: value for key, value in data.items() if value is not None}
+    AUDIT_LOG.append({"event": event, "time": time.time(), **clean_data})
 
 
 def save_transaction_record(record: RelayTransactionRecord) -> None:

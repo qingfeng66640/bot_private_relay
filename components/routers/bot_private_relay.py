@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from src.core.components.base.router import BaseRouter as BaseRouterComponent
+from src.app.plugin_system.base import BaseRouter as BaseRouterComponent
 
 class BotPrivateRelayRouter(BaseRouterComponent):
     """用于插件本地检查的最简管理路由。"""
