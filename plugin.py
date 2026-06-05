@@ -62,7 +62,7 @@ class BotPrivateRelayPlugin(BasePlugin):
     # ── 插件元数据 ──────────────────────────────────────────────────────
     plugin_name = "bot_private_relay"
     plugin_description = "基于 MQTT 的 bot 私有中继插件，支持跨 bot 私聊、社交联系、事务协商与在线状态"
-    plugin_version = "0.1.5"
+    plugin_version = "0.1.6"
     configs = [BotPrivateRelayConfig]          # 使用的配置类
     dependent_components: list[str] = []       # 无外部插件依赖
 
