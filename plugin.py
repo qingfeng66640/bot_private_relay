@@ -29,7 +29,11 @@ from .components.adapters.bot_relay import BotRelayAdapter          # MQTT 通�
 from .components.chatters.bot_relay import BotRelayChatter          # 中继对话智能体
 from .components.commands.relay import RelayCommand             # /relay 命令行管理
 from .components.config import BotPrivateRelayConfig     # 插件配置定义
-from .components.events.relay import GroupReplySuppressionEventHandler, LoopGuardEventHandler  # 事件处理器
+from .components.events.relay import (  # 事件处理器
+    DefaultChatterRelayContextBridgeEventHandler,
+    GroupReplySuppressionEventHandler,
+    LoopGuardEventHandler,
+)
 from .components.routers.bot_private_relay import BotPrivateRelayRouter     # HTTP 管理路由
 from .components.services.memory_bridge import MemoryBridgeService  # 记忆桥接服务
 from .components.services.relay import RelayProactiveService, RelayStateService  # 服务组件
@@ -97,6 +101,7 @@ class BotPrivateRelayPlugin(BasePlugin):
 
             # ── 事件处理器 ──
             LoopGuardEventHandler,             # 防循环/消息去重/预算守卫
+            DefaultChatterRelayContextBridgeEventHandler,  # 将精选 relay 上下文注入普通 Chatter
             GroupReplySuppressionEventHandler, # 群聊中静默特定 bot 消息
 
             # ── 命令 ──

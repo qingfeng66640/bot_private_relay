@@ -96,6 +96,11 @@
         },
         {
             "component_type": "event_handler",
+            "component_name": "default_chatter_relay_context_bridge",
+            "dependencies": []
+        },
+        {
+            "component_type": "event_handler",
             "component_name": "group_reply_suppression",
             "dependencies": []
         },

@@ -3,7 +3,7 @@
 # =============================================================================
 # 事件处理器模块
 # =============================================================================
-# 包含两个 EventHandler：
+# 包含三个 EventHandler：
 #
 # 1. LoopGuardEventHandler（权重 200）
 #    - 防护 relay 消息循环和出站泄漏
@@ -14,7 +14,10 @@
 #    - 出站消息只有 bot_relay adapter 可以发送
 #    - 将普通聊天消息记录为 proactive 决策线索
 #
-# 2. GroupReplySuppressionEventHandler（权重 300）
+# 2. DefaultChatterRelayContextBridgeEventHandler（权重 250）
+#    - 将精选 relay 对话作为背景上下文注入 ordinary default_chatter
+#
+# 3. GroupReplySuppressionEventHandler（权重 300）
 #    - 在群聊中静默特定 bot 的消息
 #    - 消息被移入历史但不触发 Chatter 回复
 # =============================================================================
@@ -24,11 +27,10 @@ from __future__ import annotations
 from typing import Any, cast
 
 from src.app.plugin_system.base import BaseEventHandler
-from src.core.components.types import EventType
-from src.core.models.message import Message
+from src.app.plugin_system.types import EventType, Message
 from src.kernel.event import EventDecision
 
-from ...runtime import store
+from ...runtime import dfc_context_bridge, relay_index, store
 from ..config import BotPrivateRelayConfig
 
 
@@ -92,9 +94,21 @@ class LoopGuardEventHandler(BaseEventHandler):
         """
 
         if event_name == EventType.ON_MESSAGE_RECEIVED:
-            return self._handle_received(params)
+            decision, returned = self._handle_received(params)
+            if decision == EventDecision.SUCCESS:
+                message = cast(Message | None, returned.get("message"))
+                if isinstance(message, Message):
+                    relay_envelope = message.extra.get("relay_envelope") if hasattr(message, "extra") else None
+                    await self._upsert_relay_index(message, relay_envelope if isinstance(relay_envelope, dict) else None)
+            return decision, returned
         if event_name == EventType.ON_MESSAGE_SENT:
-            return self._handle_sent(params)
+            decision, returned = self._handle_sent(params)
+            if decision == EventDecision.STOP and self._is_valid_relay_send(returned):
+                message = cast(Message | None, returned.get("message"))
+                envelope = returned.get("envelope")
+                if isinstance(message, Message):
+                    await self._upsert_relay_index(message, envelope if isinstance(envelope, dict) else None)
+            return decision, returned
         return EventDecision.PASS, params
 
     def _handle_received(self, params: dict[str, Any]) -> tuple[EventDecision, dict[str, Any]]:
@@ -219,6 +233,29 @@ class LoopGuardEventHandler(BaseEventHandler):
             )
         )
 
+    async def _upsert_relay_index(self, message: Message | None, envelope: dict[str, Any] | None = None) -> None:
+        """在 relay 收发成功后更新轻量 conversation 索引。"""
+
+        if message is None:
+            return
+        config = getattr(self.plugin, "config", None)
+        if not isinstance(config, BotPrivateRelayConfig):
+            return
+        bridge = config.dfc_context_bridge
+        if not bridge.enabled:
+            return
+        try:
+            await relay_index.upsert_from_message(
+                message,
+                index_file=bridge.index_file,
+                max_index_conversations=bridge.max_index_conversations,
+                lookback_hours=bridge.lookback_hours,
+                envelope=envelope,
+            )
+        except Exception as exc:
+            store.audit("relay_index_update_failed", reason_code=exc.__class__.__name__)
+            return
+
     @staticmethod
     def _set_continue_send(params: dict[str, Any], value: bool) -> None:
         """更新 continue_send 标志，不修改事件参数签名。
@@ -228,6 +265,21 @@ class LoopGuardEventHandler(BaseEventHandler):
 
         if "continue_send" in params:
             params["continue_send"] = value
+
+    @staticmethod
+    def _is_valid_relay_send(params: dict[str, Any]) -> bool:
+        """判断出站 relay 消息是否已通过适配器边界校验。"""
+
+        message = params.get("message")
+        if not isinstance(message, Message):
+            return False
+        relay_context = message.extra.get("relay_context", {}) if hasattr(message, "extra") else {}
+        return (
+            message.platform == "bot_relay"
+            and str(params.get("adapter_signature") or "") == "bot_private_relay:adapter:bot_relay"
+            and isinstance(relay_context, dict)
+            and params.get("continue_send", True) is True
+        )
 
 
 # =============================================================================
@@ -338,3 +390,68 @@ class GroupReplySuppressionEventHandler(BaseEventHandler):
         chat_type = str(message.chat_type or "").strip().lower()
         sender_id = str(message.sender_id or "").strip()
         return platform in platforms and chat_type in chat_types and sender_id in blocked_bot_ids
+
+
+# =============================================================================
+# DefaultChatterRelayContextBridgeEventHandler - DFC 上下文桥接
+# =============================================================================
+class DefaultChatterRelayContextBridgeEventHandler(BaseEventHandler):
+    """在普通 Chatter 执行前注入精选 relay 对话上下文。"""
+
+    handler_name = "default_chatter_relay_context_bridge"
+    handler_description = "将精选 bot 私有中继上下文注入普通 default_chatter 历史"
+    weight = 250
+    intercept_message = False
+    init_subscribe = [EventType.ON_CHATTER_STEP]
+
+    async def execute(self, event_name: str, params: dict[str, Any]) -> tuple[EventDecision, dict[str, Any]]:
+        """处理 ON_CHATTER_STEP 事件并按需注入 synthetic history message。"""
+
+        if event_name != EventType.ON_CHATTER_STEP:
+            return EventDecision.PASS, params
+
+        config = getattr(self.plugin, "config", None)
+        if not isinstance(config, BotPrivateRelayConfig):
+            return EventDecision.PASS, params
+
+        context = params.get("context")
+        stream_id = str(params.get("stream_id") or getattr(context, "stream_id", "") or "")
+        if context is None or not stream_id:
+            return EventDecision.PASS, params
+
+        platform, chat_type = self._resolve_platform_chat_type(context)
+        if platform == "bot_relay":
+            return EventDecision.PASS, params
+
+        try:
+            await dfc_context_bridge.inject_if_needed(
+                context,
+                stream_id=stream_id,
+                platform=platform,
+                chat_type=chat_type,
+                config=config.dfc_context_bridge,
+            )
+        except Exception as exc:
+            store.audit(
+                "dfc_context_bridge_injection_failed",
+                stream_id=stream_id,
+                reason_code=exc.__class__.__name__,
+            )
+            return EventDecision.PASS, params
+        return EventDecision.SUCCESS, params
+
+    @staticmethod
+    def _resolve_platform_chat_type(context: Any) -> tuple[str, str]:
+        """从上下文消息中解析当前 stream 的平台和聊天类型。"""
+
+        for source_name in ("current_message",):
+            message = getattr(context, source_name, None)
+            if isinstance(message, Message):
+                return str(message.platform or ""), str(message.chat_type or getattr(context, "chat_type", "") or "")
+        for message in reversed(getattr(context, "unread_messages", []) or []):
+            if isinstance(message, Message):
+                return str(message.platform or ""), str(message.chat_type or getattr(context, "chat_type", "") or "")
+        for message in reversed(getattr(context, "history_messages", []) or []):
+            if isinstance(message, Message):
+                return str(message.platform or ""), str(message.chat_type or getattr(context, "chat_type", "") or "")
+        return "", str(getattr(context, "chat_type", "") or "")

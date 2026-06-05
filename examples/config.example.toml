@@ -53,6 +53,18 @@ message_model_task = "actor"
 decision_retry_interval_seconds = 1.0
 chat_hint_snapshot_items = 20
 
+[dfc_context_bridge]
+enabled = false
+index_file = "data/plugins/bot_private_relay/relay_conversation_index.json"
+max_conversations = 3
+messages_per_conversation = 5
+max_chars = 3000
+max_index_conversations = 100
+lookback_hours = 72
+include_channels = ["social", "transaction"]
+trigger_platforms = ["qq"]
+trigger_chat_types = ["private", "group"]
+
 [group_reply_suppression]
 enabled = true
 platforms = ["qq"]

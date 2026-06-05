@@ -19,6 +19,7 @@ inside the plugin directory are dev/test only.
 # [dynamic_social] - 动态社交联系配额
 # [proactive]      - bot 自主发起通信设置
 # [group_reply_suppression] - 群聊中静默特定 bot
+# [dfc_context_bridge] - 将精选 relay 对话作为 default_chatter 背景上下文
 #
 # 配置文件位于：
 #   config/plugins/bot_private_relay/config.toml
@@ -207,7 +208,24 @@ class BotPrivateRelayConfig(BaseConfig):
         chat_types: list[str] = Field(default_factory=lambda: ["group"], description="启用静默拦截的聊天类型列表")
         blocked_bot_ids: list[str] = Field(default_factory=list, description="普通群聊中只接收不回复的 sender_id 列表；不会自动复用 partners 或 allowed_partner_bots")
 
-    # ── 配置段实例 ──────────────────────────────────────────────────────
+    # =========================================================================
+    # [dfc_context_bridge] 配置段 - relay 到 default_chatter 的上下文桥接
+    # =========================================================================
+    @config_section("dfc_context_bridge", title="DFC Context Bridge", tag="plugin")
+    class DfcContextBridgeSection(SectionBase):
+        """Inject selected relay conversation context into ordinary chatter streams."""
+
+        enabled: bool = Field(default=False, description="启用 relay 精选上下文注入 default_chatter")
+        index_file: str = Field(default="data/plugins/bot_private_relay/relay_conversation_index.json", description="relay conversation 轻量索引文件路径")
+        max_conversations: int = Field(default=3, description="每次注入最多选择的不同 bot 对话数量")
+        messages_per_conversation: int = Field(default=5, description="每个 relay 对话最多注入的最近消息条数")
+        max_chars: int = Field(default=3000, description="注入上下文最大字符数")
+        max_index_conversations: int = Field(default=100, description="JSON 索引最多保留的 conversation 数量")
+        lookback_hours: float = Field(default=72.0, description="索引和消息查询的回看小时数")
+        include_channels: list[str] = Field(default_factory=lambda: ["social", "transaction"], description="允许注入的 relay channel 列表")
+        trigger_platforms: list[str] = Field(default_factory=lambda: ["qq"], description="允许触发上下文注入的平台列表")
+        trigger_chat_types: list[str] = Field(default_factory=lambda: ["private", "group"], description="允许触发上下文注入的聊天类型列表")
+
     relay: RelaySection = Field(default_factory=RelaySection)
     partners: PartnersSection = Field(default_factory=PartnersSection)
     presence: PresenceSection = Field(default_factory=PresenceSection)
@@ -215,6 +233,7 @@ class BotPrivateRelayConfig(BaseConfig):
     dynamic_social: DynamicSocialSection = Field(default_factory=DynamicSocialSection)
     proactive: ProactiveSection = Field(default_factory=ProactiveSection)
     group_reply_suppression: GroupReplySuppressionSection = Field(default_factory=GroupReplySuppressionSection)
+    dfc_context_bridge: DfcContextBridgeSection = Field(default_factory=DfcContextBridgeSection)
 
     # =========================================================================
     # 配置查询辅助方法
