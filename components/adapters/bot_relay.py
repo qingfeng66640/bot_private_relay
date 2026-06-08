@@ -770,6 +770,9 @@ class BotRelayAdapter(BaseAdapter):
                 },
                 "extra": {
                     "bot_internal": True,
+                    "format_info": {
+                        "accept_format": ["text"],
+                    },
                     "relay_context": self._session_manager.relay_context_from_envelope(relay_envelope),
                     "relay_envelope": relay_envelope.to_dict(),
                 },

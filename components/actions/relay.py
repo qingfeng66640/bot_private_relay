@@ -43,6 +43,7 @@ class BotRelaySendTextAction(BaseAction):
     action_name = "send_text"
     action_description = "发送一段文本消息给对端 bot。content 只能包含要发送的正文；不要写行为理由、内心独白或格式说明。"
     chatter_allow = ["bot_relay_chatter"]  # 仅对 relay chatter 可用
+    associated_types = ["text"]
 
     async def execute(
         self,
@@ -230,6 +231,7 @@ class BotRelayPassAndWaitAction(BaseAction):
     action_name = "pass_and_wait"
     action_description = "当前 relay 对话轮次不再主动发送内容，等待对端 bot 的下一条消息；可传入 seconds 表示稍后恢复。"
     chatter_allow = ["bot_relay_chatter"]
+    associated_types = ["text"]
 
     async def execute(
         self,
@@ -258,6 +260,7 @@ class BotRelayStopConversationAction(BaseAction):
     action_name = "stop_conversation"
     action_description = "结束当前 relay 对话轮次，并在指定分钟数内避免主动继续。"
     chatter_allow = ["bot_relay_chatter"]
+    associated_types = ["text"]
 
     async def execute(
         self,
