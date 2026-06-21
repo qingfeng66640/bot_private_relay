@@ -76,6 +76,7 @@ class BotRelayAdapter(BaseAdapter):
     _KEEPALIVE = 20               # MQTT keepalive（秒），需小于 broker 空闲超时
     _FAST_DISCONNECT_WINDOW = 10  # 连接后快速断开的判定窗口（秒）
     _FAST_DISCONNECT_LIMIT = 5    # 连续快速断开次数，超过后暂停重连
+    _PRESENCE_PUBLISH_TIMEOUT = 2.0
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -147,16 +148,19 @@ class BotRelayAdapter(BaseAdapter):
         self._reconnecting = False
         self._reconnect_generation += 1
 
-        # ── 发布离线状态 ──
-        await self._publish_presence("offline")
-
-        # ── 取消心跳和 MQTT 任务 ──
-        for task_info in (self._mqtt_task_info, self._heartbeat_task_info, self._reconnect_task_info):
+        # ── 取消后台任务，避免 offline 之后再次发布 online ──
+        for task_info in (self._heartbeat_task_info, self._reconnect_task_info, self._mqtt_task_info):
             if task_info:
                 get_task_manager().cancel_task(task_info.task_id)
         self._mqtt_task_info = None
         self._heartbeat_task_info = None
         self._reconnect_task_info = None
+
+        # ── 发布离线状态 ──
+        try:
+            await self._publish_presence("offline")
+        except Exception as exc:
+            logger.warning(f"MQTT offline presence 发布失败: {exc}")
 
         # ── 停止 MQTT 客户端 ──
         self._stop_mqtt_client()
@@ -538,7 +542,10 @@ class BotRelayAdapter(BaseAdapter):
         payload = json.dumps(self._payload_dict_for_envelope(envelope), ensure_ascii=False)
         publish = getattr(self._mqtt_client, "publish", None)
         if callable(publish):
-            publish(topic, payload, qos=1, retain=True)
+            publish_info = publish(topic, payload, qos=1, retain=True)
+            wait_for_publish = getattr(publish_info, "wait_for_publish", None)
+            if callable(wait_for_publish):
+                await asyncio.to_thread(wait_for_publish, self._PRESENCE_PUBLISH_TIMEOUT)
 
     def _publish_presence_sync(self, client: Any, bot_id: str, status: str) -> None:
         """从 MQTT 回调线程同步发布 presence。
@@ -1108,9 +1115,15 @@ class BotRelayAdapter(BaseAdapter):
         self._mqtt_client = None
         if hasattr(client, "on_disconnect"):
             client.on_disconnect = None
-        loop_stop = getattr(client, "loop_stop", None)
-        if callable(loop_stop):
-            loop_stop()
         disconnect = getattr(client, "disconnect", None)
         if callable(disconnect):
-            disconnect()
+            try:
+                disconnect()
+            except Exception as exc:
+                logger.warning(f"MQTT 客户端断开失败: {exc}")
+        loop_stop = getattr(client, "loop_stop", None)
+        if callable(loop_stop):
+            try:
+                loop_stop()
+            except Exception as exc:
+                logger.warning(f"MQTT 网络循环停止失败: {exc}")

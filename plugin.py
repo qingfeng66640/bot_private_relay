@@ -50,6 +50,8 @@ from .components.tools.transactions import (
 
 logger = get_logger("bot_private_relay_plugin")
 
+_RELAY_ADAPTER_SIGNATURE = "bot_private_relay:adapter:bot_relay"
+
 
 @register_plugin
 class BotPrivateRelayPlugin(BasePlugin):
@@ -72,6 +74,8 @@ class BotPrivateRelayPlugin(BasePlugin):
         self._proactive_schedule_id: str | None = None
         # proactive 注册任务的 task_id，用于卸载时取消等待
         self._proactive_register_task_id: str | None = None
+        self._proactive_initial_tick_task_id: str | None = None
+        self._unloading = False
 
     def get_components(self) -> list[type]:
         """返回为阶段1注册的插件组件。"""
@@ -121,6 +125,8 @@ class BotPrivateRelayPlugin(BasePlugin):
     async def on_plugin_loaded(self) -> None:
         """对外暴露中继工具，并在启用时注册 proactive 调度器。"""
 
+        self._unloading = False
+
         # ── 注册配置到全局，供其他插件（如 todo_plugin）的 Tool 使用 ──
         if isinstance(self.config, BotPrivateRelayConfig):
             register_relay_config(self.config)
@@ -146,6 +152,8 @@ class BotPrivateRelayPlugin(BasePlugin):
     async def on_plugin_unloaded(self) -> None:
         """移除此插件实例持有的 proactive 调度器状态。"""
 
+        self._unloading = True
+
         # ── 取消 proactive 调度器 ──
         if self._proactive_schedule_id:
             try:
@@ -164,6 +172,27 @@ class BotPrivateRelayPlugin(BasePlugin):
                 pass
             self._proactive_register_task_id = None
 
+        if self._proactive_initial_tick_task_id:
+            try:
+                get_task_manager().cancel_task(self._proactive_initial_tick_task_id)
+            except Exception:
+                pass
+            self._proactive_initial_tick_task_id = None
+
+        await self._stop_relay_adapter()
+
+    async def _stop_relay_adapter(self) -> None:
+        """Stop the running relay adapter during plugin unload."""
+
+        try:
+            from src.core.managers.adapter_manager import get_adapter_manager
+
+            adapter_manager = get_adapter_manager()
+            if adapter_manager.is_adapter_active(_RELAY_ADAPTER_SIGNATURE):
+                await adapter_manager.stop_adapter(_RELAY_ADAPTER_SIGNATURE)
+        except Exception as exc:
+            logger.warning(f"停止 Bot 私有中继适配器失败: {exc}")
+
     # =========================================================================
     # Proactive 调度器注册
     # =========================================================================
@@ -178,7 +207,7 @@ class BotPrivateRelayPlugin(BasePlugin):
         from src.kernel.scheduler import TriggerType, get_unified_scheduler
 
         # 二次确认配置有效
-        if not isinstance(self.config, BotPrivateRelayConfig) or not self.config.proactive.enabled:
+        if self._unloading or not isinstance(self.config, BotPrivateRelayConfig) or not self.config.proactive.enabled:
             return
 
         # 取配置的检查间隔，最小 1 秒
@@ -187,6 +216,8 @@ class BotPrivateRelayPlugin(BasePlugin):
 
         # 轮询等待调度器就绪（最多 600 次尝试）
         for _attempt in range(600):
+            if self._unloading:
+                return
             try:
                 # 创建周期性调度：每隔 interval 秒触发一次 proactive_tick_job
                 self._proactive_schedule_id = await scheduler.create_schedule(
@@ -200,11 +231,12 @@ class BotPrivateRelayPlugin(BasePlugin):
                 logger.info(f"Bot 私有中继 proactive 调度已注册: {self._proactive_schedule_id}")
 
                 # 立即触发首次 proactive tick（不等第一个周期）
-                get_task_manager().create_task(
+                task = get_task_manager().create_task(
                     self._proactive_tick_job(),
                     name="bot_private_relay_proactive_initial_tick",
                     daemon=True,
                 )
+                self._proactive_initial_tick_task_id = task.task_id
                 return
             except RuntimeError:
                 # 调度器尚未就绪，等待 0.5 秒后重试
@@ -226,4 +258,6 @@ class BotPrivateRelayPlugin(BasePlugin):
         4. 通过 MQTT 发送消息
         """
 
+        if self._unloading:
+            return
         await RelayProactiveService(self).tick()
